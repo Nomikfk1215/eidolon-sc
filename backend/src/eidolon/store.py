@@ -123,6 +123,26 @@ CREATE TABLE IF NOT EXISTS photos (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS photos_by_conversation ON photos(conversation_id);
+-- A picture the user sent with a turn, kept with that turn's message: one per message, read
+-- back when the record is shown and handed to a model that can see it on the next turns.
+CREATE TABLE IF NOT EXISTS user_images (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    mime TEXT NOT NULL,
+    image BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS user_images_by_conversation ON user_images(conversation_id);
+-- Her reply as audio, voiced the first time the user asks for it (the speaker beside its
+-- bubble) and kept with the message so asking again voices nothing: one per message.
+CREATE TABLE IF NOT EXISTS message_speech (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    mime TEXT NOT NULL,
+    audio BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS message_speech_by_conversation ON message_speech(conversation_id);
 -- Each call that connected in a conversation (GLOSSARY.md「接通」), for stats alone: when it
 -- connected and how long it lasted once it had, as its activity record says; nothing of what
 -- was said. Not in the conversation's record: she knows nothing of it (ADR-0021).
@@ -1052,6 +1072,7 @@ class Store:
         typed: Typed | None = None,
         ends: bool = False,
         photo: NewPhoto | None = None,
+        image: tuple[bytes, str] | None = None,
     ) -> Message:
         """Record the user's input, said at `said_at` (as `timestamp` gives it; now by
         default), and the character's reply together, with how the turn changed her
@@ -1063,9 +1084,15 @@ class Store:
         with self._lock, self._db:
             if self._ended(conversation_id) is not None:
                 raise ConversationEnded()
-            self._insert_message(
+            user_message = self._insert_message(
                 conversation_id, "user", text=text, created_at=said_at, typed=typed
             )
+            if image is not None:
+                self._db.execute(
+                    "INSERT INTO user_images"
+                    " (message_id, conversation_id, mime, image, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (user_message.id, conversation_id, image[1], image[0], _now()),
+                )
             replied = self._insert_message(
                 conversation_id, "character", segments=reply, affinity=affinity
             )
@@ -1128,6 +1155,58 @@ class Store:
                 (photo_id, user_id),
             ).fetchone()
         return row["image"] if row else None
+
+    def user_image_message_ids(self, conversation_id: str) -> set[int]:
+        """The messages of this conversation the user sent a picture with."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT message_id FROM user_images WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchall()
+        return {row["message_id"] for row in rows}
+
+    def user_image(self, message_id: int, user_id: str) -> tuple[bytes, str] | None:
+        """That picture and its media type, if the message is in one of the user's
+        conversations; None if not."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT i.image, i.mime FROM user_images i"
+                " JOIN conversations c ON c.id = i.conversation_id"
+                " WHERE i.message_id = ? AND c.user_id = ?",
+                (message_id, user_id),
+            ).fetchone()
+        return (row["image"], row["mime"]) if row else None
+
+    def message_to_speak(self, message_id: int, user_id: str) -> tuple[str, str, str] | None:
+        """Which character said the message, what she said, and which conversation it is in,
+        if it is one of her replies in one of the user's conversations; None if not."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT c.character_id, m.ja, m.conversation_id FROM messages m"
+                " JOIN conversations c ON c.id = m.conversation_id"
+                " WHERE m.id = ? AND c.user_id = ? AND m.role = 'character' AND m.ja IS NOT NULL",
+                (message_id, user_id),
+            ).fetchone()
+        return (row["character_id"], row["ja"], row["conversation_id"]) if row else None
+
+    def message_speech(self, message_id: int) -> tuple[bytes, str] | None:
+        """That reply's audio and its media type, once it has been voiced."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT audio, mime FROM message_speech WHERE message_id = ?", (message_id,)
+            ).fetchone()
+        return (row["audio"], row["mime"]) if row else None
+
+    def keep_message_speech(
+        self, message_id: int, conversation_id: str, mime: str, audio: bytes
+    ) -> None:
+        """Keep the audio `audio` the reply was voiced into, for the next ask."""
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO message_speech"
+                " (message_id, conversation_id, mime, audio, created_at) VALUES (?, ?, ?, ?, ?)",
+                (message_id, conversation_id, mime, audio, _now()),
+            )
 
     def add_gift(
         self,

@@ -63,6 +63,7 @@ from eidolon.characters import Character
 from eidolon.clock import Clock
 from eidolon.config import (
     CLOUDFLARE_JUDGE_MODELS,
+    DEFAULT_FISH_AUDIO_MODEL,
     DEFAULT_REACH_OUTS_PER_DAY,
     DEFAULT_BAILIAN_JUDGE_REGION,
     ChatModelSettings,
@@ -96,6 +97,7 @@ from eidolon.config import (
     with_proxy_password,
 )
 from eidolon.database import connect
+from eidolon.greetings import FishAudioSettings
 from eidolon.affinity import Judged
 from eidolon.affinity_judge import ModelAffinityJudge
 from eidolon.emotion import EmotionJudging, ModelEmotionJudge
@@ -956,6 +958,16 @@ class LiveConfig:
         return _llm(self.effective(MEMORY_LLM))
 
     @property
+    def voice(self) -> "FishAudioSettings | None":
+        """The deployer's speech synthesis in effect now; None without a key, as then
+        nothing can be voiced on demand."""
+        values = self.effective(TTS)
+        api_key = str(values.get("api_key") or "").strip()
+        if not api_key:
+            return None
+        return FishAudioSettings(api_key, values.get("model") or DEFAULT_FISH_AUDIO_MODEL)
+
+    @property
     def judge_settings(self) -> JudgeSettings | None:
         """The judge model in effect now; None without one."""
         if self.settings.judge is None:
@@ -1578,6 +1590,7 @@ class LiveRetrievalJudge:
         text: str,
         affinity: bool = False,
         photo: bool = False,
+        tier: str | None = None,
     ) -> tuple[Need, Judged | None, bool]:
         lease = self._judge.lease()
         try:
@@ -1586,7 +1599,7 @@ class LiveRetrievalJudge:
                 self._activity,
                 judge_origin(lease.settings),
             )
-            return await judge.judge(character, history, text, affinity, photo)
+            return await judge.judge(character, history, text, affinity, photo, tier=tier)
         finally:
             lease.release()
 
@@ -1613,6 +1626,7 @@ class LiveAffinityJudge:
         text: str,
         affinity: bool = True,
         photo: bool = False,
+        tier: str | None = None,
     ) -> tuple[Judged | None, bool]:
         lease = self._judge.lease()
         try:
@@ -1621,7 +1635,7 @@ class LiveAffinityJudge:
                 self._activity,
                 judge_origin(lease.settings),
             )
-            return await judge.judge(character, history, text, affinity, photo)
+            return await judge.judge(character, history, text, affinity, photo, tier=tier)
         finally:
             lease.release()
 

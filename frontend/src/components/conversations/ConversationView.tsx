@@ -37,7 +37,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { copy } from "@/i18n";
-import { cueText, untilText } from "@/lib/affinity";
+import { cueText, changeNote, untilText } from "@/lib/affinity";
 import type { Character } from "@/lib/api";
 import type { Entry } from "@/lib/conversationLog";
 import type { Failure } from "@/lib/failure";
@@ -46,21 +46,27 @@ import { isLive, NOT_OPEN, type LiveConversation, type Trophy } from "@/lib/live
 import { linesOf, type Line } from "@/lib/messageLines";
 import { pastDay } from "@/lib/pastConversations";
 import { photosUsedUpText } from "@/lib/photoFailure";
+import { hearVoice, startRecording, voiceAvailability, type Recording, type VoiceAvailability } from "@/lib/voiceMessage";
+import { speechState, subscribeSpeech, toggleSpeech } from "@/lib/messageSpeech";
 import { cn } from "@/lib/utils";
 import { herVars } from "@/theme/herVars";
 import {
   AchievementsIcon,
+  AttachImageIcon,
   BackIcon,
+  CloseIcon,
   CooldownIcon,
   EndedIcon,
   GiftIcon,
   MoreIcon,
+  MicIcon,
   NewConversationIcon,
   OutfitIcon,
   PastConversationsIcon,
   PhoneIcon,
   PhotosUsedUpIcon,
   SendIcon,
+  SpeakIcon,
 } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
 
@@ -126,6 +132,17 @@ export function ConversationView({
   const outfits = useStandOutfits(character);
   const [pickingOutfit, setPickingOutfit] = useState(false);
   const [pickingPast, setPickingPast] = useState(false);
+  // 这一轮要发给她的图片：选中的 data URL，发出去或取消后清空。
+  const [picture, setPicture] = useState<string | null>(null);
+  const pictureInput = useRef<HTMLInputElement>(null);
+  const [recording, setRecording] = useState<Recording | null>(null);
+  const recordingRef = useRef<Recording | null>(null);
+  const micRequest = useRef<object | null>(null);
+  const voiceGeneration = useRef(0);
+  const [openingMic, setOpeningMic] = useState(false);
+  const [voiceReady, setVoiceReady] = useState<VoiceAvailability | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceFailure, setVoiceFailure] = useState<string | null>(null);
   const { viewing, view, backToCurrent } = usePastConversation(character.id);
   const subtree = useRef<HTMLDivElement>(null);
   // 她现在对制作人的好感度；读不到（好感度关着、没配判断模型或请求失败）就不显示标识，也不出变化胶囊。
@@ -133,6 +150,30 @@ export function ConversationView({
   const achievements = useHerAchievements(character.id, userId, snapshot.herUnlockedAt);
   // 解除时刻按制作人的时区写成今天或明天。
   const timeZone = useProducerTimezone();
+
+  useEffect(() => {
+    ++voiceGeneration.current;
+    let current = true;
+    setRecording(null);
+    setOpeningMic(false);
+    setTranscribing(false);
+    setVoiceReady(null);
+    setVoiceFailure(null);
+    setPicture(null);
+    void voiceAvailability().then((ready) => {
+      if (current) setVoiceReady(ready);
+    }).catch(() => {
+      if (current) setVoiceReady({ available: false, reason: t.voiceBlocked });
+    });
+    return () => {
+      current = false;
+      ++voiceGeneration.current;
+      micRequest.current = null;
+      const active = recordingRef.current;
+      recordingRef.current = null;
+      void active?.stop().catch(() => undefined);
+    };
+  }, [character.id, userId]);
 
   // 向外壳要她的对话（外壳里留着她的通话就用那一份，否则打开她最新的一个，从没聊过就开一个新的）；
   // 离开这一页时交回：通话还在进行就留在外壳里，否则就此告别。
@@ -170,6 +211,18 @@ export function ConversationView({
   const isCovered = layer !== null && !layer.collapsed;
   const barShown = isLive(call) && layer?.collapsed === true;
   const focus = useFocusBack({ layerOpen: isCovered, noteShown: barShown });
+  const recordingConversationId = conversation.status === "open" ? conversation.id : null;
+  useEffect(() => {
+    // The composer can disappear without unmounting this page; invalidate pending work too.
+    ++voiceGeneration.current;
+    micRequest.current = null;
+    const active = recordingRef.current;
+    recordingRef.current = null;
+    void active?.stop().catch(() => undefined);
+    setRecording(null);
+    setOpeningMic(false);
+    setTranscribing(false);
+  }, [recordingConversationId, isPastShown, ended, cooling, isCovered, inCall]);
 
   // 页首的图标键：手机上触控目标不小于 44px（DESIGN.md「Layout」）。
   const headerKey = "max-md:size-11";
@@ -300,7 +353,69 @@ export function ConversationView({
     );
   }
 
-  const canSend = isOpen && draft.trim() !== "";
+  const canSend = isOpen && !snapshot.busy && !transcribing && !openingMic && recording === null
+    && call.phase !== "dialing" && !(inCall && picture !== null)
+    && (draft.trim() !== "" || picture !== null);
+  const submitDraft = async () => {
+    if (!canSend || !live) return;
+    const generation = voiceGeneration.current;
+    const attached = picture;
+    setPicture(null);
+    await live.submit(attached);
+    if (attached && live.snapshot().failure && voiceGeneration.current === generation) {
+      setPicture((current) => current ?? attached);
+    }
+  };
+  /**
+   * 点一下开始录，再点一下停下并发送：录到的声音交给后端听成文字，当普通消息发出去。
+   * 浏览器只在安全来源下给麦克风，所以纯 HTTP 的局域网地址上会失败，提示用户换地址。
+   */
+  const toggleVoice = async () => {
+    if (transcribing || openingMic || inCall || ((snapshot.busy || !voiceReady?.available) && recording === null)) return;
+    const generation = voiceGeneration.current;
+    if (recording === null) {
+      setVoiceFailure(null);
+      const request = {};
+      micRequest.current = request;
+      setOpeningMic(true);
+      try {
+        const started = await startRecording();
+        if (micRequest.current !== request) {
+          await started.stop();
+          return;
+        }
+        recordingRef.current = started;
+        setRecording(started);
+      } catch {
+        if (voiceGeneration.current === generation) setVoiceFailure(t.voiceBlocked);
+      } finally {
+        if (micRequest.current === request) {
+          micRequest.current = null;
+          setOpeningMic(false);
+        }
+      }
+      return;
+    }
+    recordingRef.current = null;
+    setRecording(null);
+    setTranscribing(true);
+    try {
+      const captured = await recording.stop();
+      if (captured === null || voiceGeneration.current !== generation) return;
+      const heard = await hearVoice(captured);
+      if (voiceGeneration.current !== generation) return;
+      live?.setDraft(heard);
+      // A reply may have started while recognition was running: keep the recognized draft.
+      if (!live?.snapshot().busy && !(inCall && picture)) {
+        await live?.submit(picture);
+        if (!live?.snapshot().failure) setPicture(null);
+      }
+    } catch (e) {
+      if (voiceGeneration.current === generation) setVoiceFailure(e instanceof Error ? e.message : t.voiceBlocked);
+    } finally {
+      if (voiceGeneration.current === generation) setTranscribing(false);
+    }
+  };
   const cooldownUntil = cooling ? affinity?.cooldown_until : null;
   // 冷却中的解除时刻和去礼物页的「送她一件礼物」：冷却那一行和冷却版结束卡共用。
   const until = cooldownUntil ? untilText(new Date(cooldownUntil), new Date(), timeZone) : null;
@@ -340,12 +455,55 @@ export function ConversationView({
       className="flex shrink-0 flex-col gap-2 border-t bg-background px-3 py-2"
       onSubmit={(e) => {
         e.preventDefault();
-        void live?.submit();
+        void submitDraft();
       }}
     >
       {/* 失败的原因（没登录时带去登录的入口）；通话层盖着时整栏 inert，Tab 摸不到 */}
       {failure && <FailureNotice failure={{ ...failure, message: failureText(failure) }} />}
+      {voiceFailure && (
+        <p role="status" className="px-1 text-meta text-destructive">
+          {voiceFailure}
+        </p>
+      )}
+      {picture && (
+        <div className="flex items-start gap-2">
+          <img src={picture} alt={t.imageAttached} className="max-h-24 rounded-bubble border object-contain" />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t.removeImage}
+            onClick={() => setPicture(null)}
+          >
+            <CloseIcon className="size-4" />
+          </Button>
+        </div>
+      )}
       <div className="flex items-end gap-2">
+        <input
+          ref={pictureInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => setPicture(typeof reader.result === "string" ? reader.result : null);
+            reader.readAsDataURL(file);
+          }}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-lg"
+          aria-label={t.attachImage}
+          disabled={!isOpen || inCall || snapshot.busy}
+          onClick={() => pictureInput.current?.click()}
+        >
+          <AttachImageIcon className="size-5" />
+        </Button>
         <Textarea
           variant="composer"
           rows={1}
@@ -355,7 +513,7 @@ export function ConversationView({
             // 回车发送，Shift+回车换行；输入法选字时的回车不算。
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              void live?.submit();
+              void submitDraft();
             }
           }}
           placeholder={t.placeholder}
@@ -363,6 +521,23 @@ export function ConversationView({
           disabled={!isOpen}
           className="flex-1"
         />
+        {/* 发语音：点一下开始录，再点一下停下并发送。录音时按键变成红实底并呼吸，
+            这样不看图标也知道正在录；识别中显示转圈。 */}
+        <HeaderTip label={voiceReady?.reason ?? t.voiceStart}>
+          <Button
+            type="button"
+            variant={recording === null ? "ghost" : "destructive"}
+            size="icon-lg"
+            aria-label={recording === null ? t.voiceStart : t.voiceStop}
+            aria-pressed={recording !== null}
+            disabled={!isOpen || inCall || transcribing || openingMic || (recording === null && (snapshot.busy || !voiceReady?.available))}
+            focusableWhenDisabled
+            onClick={() => void toggleVoice()}
+            className={recording === null ? undefined : "animate-pulse"}
+          >
+            {transcribing || openingMic ? <Spinner className="size-5" /> : <MicIcon className="size-5" />}
+          </Button>
+        </HeaderTip>
         {/* 按下时不抢输入框的焦点：手机上一失焦键盘就收、dock 冒出来，输入栏跟着跳走，这一下点击落空 */}
         <Button
           type="submit"
@@ -539,6 +714,24 @@ function ComposerCard({
  * 历史对话换掉输入栏的只读卡（`ComposerCard`）：历史图标加「这是你们的历史对话」（她结束了的另有一句），
  * 右边描边的大号「回到当前对话」。
  */
+/**
+ * 页首好感度标识左边的奖杯（DESIGN.md「Buttons」）：解锁她的阶段时跳出来，奖杯加「+n」（这次到账的抽奖次数），
+ * 弹出、停住、淡出共 3 秒（`animate-trophy`）；减少动态时只淡入淡出。读屏读旁边的 live region，这里藏起来。
+ */
+function TrophyCue({ trophy, isReducedMotion }: { trophy: Trophy; isReducedMotion: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex shrink-0 items-center gap-1 px-1 text-sm tabular-nums",
+        isReducedMotion ? "animate-trophy-fade" : "animate-trophy",
+      )}
+    >
+      <AchievementsIcon className="size-4" />+{trophy.draws}
+    </span>
+  );
+}
+
 function ReadOnlyCard({
   viewing,
   inert,
@@ -555,24 +748,6 @@ function ReadOnlyCard({
         {t.past.backToCurrent}
       </Button>
     </ComposerCard>
-  );
-}
-
-/**
- * 页首好感度标识左边的奖杯（DESIGN.md「Buttons」）：解锁她的阶段时跳出来，奖杯加「+n」（这次到账的抽奖次数），
- * 弹出、停住、淡出共 3 秒（`animate-trophy`）；减少动态时只淡入淡出。读屏读旁边的 live region，这里藏起来。
- */
-function TrophyCue({ trophy, isReducedMotion }: { trophy: Trophy; isReducedMotion: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "flex shrink-0 items-center gap-1 px-1 text-sm tabular-nums",
-        isReducedMotion ? "animate-trophy-fade" : "animate-trophy",
-      )}
-    >
-      <AchievementsIcon className="size-4" />+{trophy.draws}
-    </span>
   );
 }
 
@@ -620,10 +795,14 @@ function Messages({
                 </MessageScrollerItem>
               ) : line.kind === "cue" ? (
                 <MessageScrollerItem key={line.key} className="mt-2 flex justify-center">
-                  {/* 好感度的变化胶囊：一个升降小箭头加一句话 */}
+                  {/* 好感度的变化胶囊：一个升降小箭头加一句话；有判断模型的分级时，
+                      后面补上「好感 -2 · 让她有点不舒服」，看得出为什么变 */}
                   <Capsule>
                     <CueArrowIcon up={line.change.up} className="size-3" />
                     {cueText(line.change, character.name)}
+                    {line.change.step != null && (
+                      <span className="text-muted-foreground">{changeNote(line.change)}</span>
+                    )}
                   </Capsule>
                 </MessageScrollerItem>
               ) : line.kind === "photos-used-up" ? (
@@ -693,6 +872,27 @@ function Bubbled({
   character: Character;
 }) {
   const time = <time className="shrink-0 pb-0.5 text-meta text-muted-foreground tabular-nums">{clock(entry.at)}</time>;
+  const speech = useSyncExternalStore(subscribeSpeech, speechState, speechState);
+  /** 回复的消息编号；搭话有独立的编号空间，不能当作 messages 表里的消息。 */
+  const speechId = /^m\d+$/.test(entry.key) ? Number(entry.key.slice(1)) : null;
+  const speaker =
+    speechId === null ? null : (
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-lg"
+        onClick={() => toggleSpeech(speechId)}
+        aria-label={speech?.messageId === speechId ? t.speaking : t.speak}
+        aria-pressed={speech?.messageId === speechId}
+        className="shrink-0"
+      >
+        {speech?.messageId === speechId && speech.phase === "loading" ? (
+          <Spinner className="size-4" />
+        ) : (
+          <SpeakIcon className="size-4" />
+        )}
+      </Button>
+    );
   if (entry.kind === "user") {
     return (
       <Message align="end">
@@ -700,6 +900,13 @@ function Bubbled({
           {last && time}
           <Bubble variant="producer" align="end" joinsPrevious={!first} joinsNext={!last}>
             <BubbleContent>
+              {entry.image && (
+                <img
+                  src={entry.image}
+                  alt=""
+                  className="mb-1 max-h-64 rounded-bubble object-contain"
+                />
+              )}
               <p className="text-body whitespace-pre-wrap">{entry.text}</p>
             </BubbleContent>
           </Bubble>
@@ -736,6 +943,7 @@ function Bubbled({
               )}
             </BubbleContent>
           </Bubble>
+          {last && !entry.pending && speaker}
           {last && !entry.pending && time}
         </div>
       </MessageContent>

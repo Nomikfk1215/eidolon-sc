@@ -125,19 +125,28 @@ async def test_signing_out_ends_the_session_on_this_device_only(make_client: Cli
 
 
 @pytest.mark.parametrize(
-    "origin", ["https://evil.example", "http://localhost.evil.example:3000", "null"]
+    "origin, allowed",
+    [
+        ("https://evil.example", False),
+        ("http://localhost.evil.example:3000", False),
+        ("null", False),
+        ("http://192.168.1.10:8080", True),
+        ("https://100.64.0.10", True),
+        ("http://[::1]:8080", True),
+        ("http://localhost:bad-port", False),
+    ],
 )
-async def test_requests_that_change_something_from_other_sites_are_refused(
-    make_client: ClientFactory, origin: str
+async def test_development_accepts_local_networks_and_refuses_other_websites(
+    make_client: ClientFactory, origin: str, allowed: bool
 ):
+    """LAN, Tailscale and loopback work without admitting unrelated websites."""
     client = make_client(FakeLLM())
 
     res = await client.post(
         "/api/conversations", json={"character_id": "mano"}, headers={"Origin": origin}
     )
 
-    assert res.status_code == 403
-    assert (await mano_conversations(client)).json() == []
+    assert res.status_code == (201 if allowed else 403)
     reading = await client.get(
         "/api/conversations", params={"character_id": "mano"}, headers={"Origin": origin}
     )

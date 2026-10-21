@@ -33,3 +33,9 @@ deploy/event-names.toml
 /.scratch/photos/prototype/tags/contact_sheet.png
 
 __pycache__/
+
+# Local deployment outputs and private material.
+/certs/
+/backups/
+/speech/
+/stability100.json

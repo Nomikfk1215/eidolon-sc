@@ -57,13 +57,14 @@ from eidolon.gift_catalog import Rarity
 
 T = TypeVar("T")
 
-Tier = Literal["cold", "distant", "trust", "close", "intimate"]
-"""冷淡、疏远、信任、亲近、亲密, from lowest to highest."""
+Tier = Literal["cold", "distant", "trust", "close", "intimate", "love"]
+"""冷淡、疏远、信任、亲近、亲密、爱意, from lowest to highest."""
 
 TIERS: tuple[tuple[Tier, float], ...] = (
-    ("cold", 0), ("distant", 20), ("trust", 40), ("close", 65), ("intimate", 85),
+    ("cold", 0), ("distant", 20), ("trust", 40), ("close", 65), ("intimate", 85), ("love", 100),
 )
-"""Each tier, from the value it begins at, lowest first."""
+"""Each tier, from the value it begins at, lowest first. 全程 0–120；「爱意」只留给最高的
+一段：85 到 100 是亲密，100 以上才是爱意，所以它比别的档更难到、也更容易掉出去。"""
 
 BELOW_TRUST: frozenset[Tier] = frozenset(
     t for t, start in TIERS if start < dict(TIERS)["trust"]
@@ -79,7 +80,7 @@ THAW = 10.0
 RECOVERY_PER_DAY = 10.0
 """How much it recovers a day below the normal value, evenly."""
 
-LOWEST, HIGHEST = 0.0, 100.0
+LOWEST, HIGHEST = 0.0, 120.0
 """What it is held between; falling to the lowest begins a cooldown."""
 
 LEVEL_STEPS = (-5.0, -2.0, 0.0, 1.0, 2.0)
@@ -89,8 +90,11 @@ LEVEL_STEPS = (-5.0, -2.0, 0.0, 1.0, 2.0)
 NO_EFFECT = 2
 """The level of a turn that changes nothing, as one the judge model is unsure of is."""
 
-OUT_OF_LINE_STEP = -10.0
-"""How much a turn out of line (GLOSSARY.md「不该说的话」) lowers it, whatever its level."""
+OUT_OF_LINE_STEP = -6.0
+"""How much a turn out of line (GLOSSARY.md「不该说的话」) lowers it, whatever its level.
+
+Lowered from -10: one such turn should hurt more than an ordinary unkind one (-2), without
+erasing a whole tier of it at once."""
 
 DAY_TIMEZONE = "Asia/Shanghai"
 """The time zone whose midnight begins each day for turns' gains and draw chances: Beijing
@@ -242,6 +246,8 @@ _TIER_PROMPTS: dict[Tier, str] = {
     "close": "你现在和制作人比平时更近：更放松，更愿意说心里话，更主动关心对方，玩笑也多一些。",
     "intimate": "你现在非常信赖制作人：会说出平时不轻易说的心事，流露出对对方的依赖，"
     "对制作人的事格外上心。",
+    "love": "你现在格外珍惜和制作人的关系：会更主动地关心、分享日常，坦率表达喜欢和想念。"
+    "依然保持自己的性格、独立意愿和分寸，尊重彼此的边界。",
 }
 """How she speaks to the producer in each tier but trust, the same for every character, who
 shows it in her own way. No number, no tier's name, no word for affinity: she is to sound
@@ -250,6 +256,8 @@ like someone, not a system. Neither cold nor distant is hating the producer."""
 _FONDNESS: dict[Tier, str] = {
     "close": "偶尔可以轻轻带一句想念，隔得久了也可以嗔怪制作人好久没来找你。",
     "intimate": "可以明着撒娇：说想制作人、一直在等，隔得久了也可以嗔怪对方好久没来。",
+    "love": "可以像对恋人那样说话：说喜欢、说想被抱、说想一直在一起；也可以吃醋、撒娇、"
+    "开一点两个人之间的玩笑。露骨的情话不必说，克制一点反而更像你。",
 }
 """How sweet on the producer she may be in the tiers above trust, in her replies and
 reach-outs alike."""
@@ -402,13 +410,18 @@ def warns(
 class Change:
     """How affinity changed, kept with what changed it (her reply, a gift) for the browser to
     show: up or down, to which tier and whether that is another, and whether a cooldown began
-    or, as only a gift does, ended with it. Neither why nor by how much."""
+    or, as only a gift does, ended with it. `level` and `step` are the judge's verdict on the
+    turn — from 0 (hurt her) to 4 (made her very happy), and how much it moved her — for
+    showing why it changed, not only that it did; a gift has neither."""
 
     up: bool
     tier_changed: bool
     tier: Tier
     cooldown: bool
     thawed: bool = False
+    level: int | None = None
+    step: float | None = None
+    out_of_line: bool = False
 
 
 def _gift_step(rarity: Rarity, liked: bool, cooling: bool) -> float:
@@ -491,6 +504,9 @@ class Affinities:
                     tier_changed=after.tier != before.tier,
                     tier=after.tier,
                     cooldown=after.cooling and not before.cooling,
+                    level=judged.level,
+                    step=value - before.value,
+                    out_of_line=judged.out_of_line,
                 )
             recorded = record(change)
             with self._db:

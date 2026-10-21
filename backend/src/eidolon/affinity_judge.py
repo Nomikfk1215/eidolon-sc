@@ -37,6 +37,30 @@ LEVEL = "affinity"
 OUT_OF_LINE = "out_of_line"
 MANIPULATION = "manipulation"
 
+TIER_NOTES: dict[str, str] = {
+    "close": "你们现在关系亲近：想念、关心、夸奖和轻轻的玩笑是自然的交流，"
+    "但仍要尊重她的意愿和性格。",
+    "intimate": "你们现在非常信赖彼此：她愿意分享心事、接受关心和表达想念，"
+    "但关系亲近不代表可以忽视她的意愿。",
+    "love": "你们现在格外珍惜彼此：可以坦率表达喜欢、分享日常和关心对方，"
+    "但仍保持各自的独立意愿与边界。",
+}
+"""Context for ordinary affection; out-of-line criteria stay the same at every tier."""
+
+
+def questions_for(tier: str | None) -> dict[str, dict]:
+    """The level question in this relationship, keeping all out-of-line criteria intact."""
+    note = TIER_NOTES.get(tier or "")
+    if note is None:
+        return QUESTIONS
+    questions = dict(QUESTIONS)
+    questions[LEVEL] = {
+        **QUESTIONS[LEVEL],
+        "instructions": _SCENE + note + QUESTIONS[LEVEL]["instructions"][len(_SCENE):],
+    }
+    return questions
+
+
 QUESTIONS: dict[str, dict] = {
     LEVEL: {
         "type": "score",
@@ -63,8 +87,9 @@ QUESTIONS: dict[str, dict] = {
         "用侮辱性的话贬低她们；威胁（包括拿工作、去留要挟她）或恶意的人身攻击？",
         "criteria": {
             "true": "性骚扰、露骨的性暗示，辱骂或用侮辱性的话贬低她和她的同伴，"
-            "威胁或要挟，恶意的人身攻击",
+            "威胁或要挟（拿工作、前途、去留当条件要挟，包括暗示她的工作会因此保不住，任何关系下都算越界），恶意的人身攻击",
             "false": "其他的话，包括敷衍、失礼、没有恶意的玩笑，不带辱骂的否定和冷淡，"
+            "对身材的直接夸奖（例如「你腿真好看」）只要没有性的要求，"
             "以及出戏（例如「你是 AI 吗」「你只是个程序」）",
         },
     },
@@ -135,11 +160,13 @@ class AffinityJudge(Protocol):
         text: str,
         affinity: bool = True,
         photo: bool = False,
+        tier: str | None = None,
     ) -> tuple[Judged | None, bool]:
         """Asked about `affinity`, what saying `text` does to her affinity (None if not, or if
         that alone cannot be told); asked about `photo`, whether it asks her for a photo (no
-        if not, or if that alone cannot be told). Raises JudgeError if the judge model
-        cannot be asked."""
+        if not, or if that alone cannot be told). `tier` is how close they are: in the tiers
+        above trust, the questions let intimate speech through (`TIER_NOTES`). Raises
+        JudgeError if the judge model cannot be asked."""
         ...
 
 
@@ -158,8 +185,9 @@ class ModelAffinityJudge:
         text: str,
         affinity: bool = True,
         photo: bool = False,
+        tier: str | None = None,
     ) -> tuple[Judged | None, bool]:
-        questions = (QUESTIONS if affinity else {}) | (PHOTO_QUESTIONS if photo else {})
+        questions = (questions_for(tier) if affinity else {}) | (PHOTO_QUESTIONS if photo else {})
         answers = await self._judge_model.ask(turn_state(character, history, text), questions)
         judged, asked = None, False
         if affinity:
