@@ -16,12 +16,16 @@
 
 ## 自动验证
 
-- 受影响检查：后端 863 项通过；前端 36 个文件、617 项通过；ruff、pyright、前端类型检查通过。
-- 原有通话测试 `tests/test_live_config_services.py::test_a_saved_judge_model_judges_the_next_turn_while_a_call_keeps_its_own` 在当前代码与未修改的 `8a31a358` 快照上均等待 emotion 消息超时；在本机 Python 3.12 环境复现，已单独记录并在最终受影响检查中排除此 1 项，没有修改或删除该测试。
+- 最终整合检查：后端 972 项通过，未排除测试；前端 36 个文件、618 项通过；ruff、pyright、前端类型检查通过。
+- 首轮迁移检查为后端 863 项、前端 617 项通过。原有通话测试 `tests/test_live_config_services.py::test_a_saved_judge_model_judges_the_next_turn_while_a_call_keeps_its_own` 在最初的迁移代码与未修改的 `8a31a358` 快照上均等待 emotion 消息超时；在本机 Python 3.12 环境复现。当时单独记录并排除此项以验证其他改动；合入远端 `ba707c82` 后，此测试已通过，最终检查未排除任何测试。
 - 补充运行好感度、冷却、文字回合、自带模型及媒体测试：除上述同一项原有超时外，57 项通过。
 - 前端生产构建成功，只有 LINE Seed JP 回退字体信息缺失的警告。
 - shadcn 纪律检查、迁入 PowerShell 和 shell 脚本语法检查通过。
 - 无模型配置的临时后端可以启动，验证后已停止。
+
+## 并发更新的整合复核
+
+核验发现远端 `main`、`ultra` 已同步原作者的 `ba707c82`，因此将其合入迁移分支。文本冲突仅在 `app.py` 的导入和模块常量区，保留双方内容后解决。独立复核确认图片参数链、原子保存、线程读库、冷却回调、可选模型提示与健康检查均保留，未发现明确语义冲突。随后重新运行上述最终检查和生产构建。
 
 ## 验证边界
 
