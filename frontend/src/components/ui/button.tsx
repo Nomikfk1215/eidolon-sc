@@ -20,6 +20,8 @@ const buttonVariants = cva(
         // eidolon: 原来是淡红底红字；DESIGN.md「Buttons」要挂断红实底、白字（白字的对比度在 themeContrast.test.ts 里）。
         destructive:
           "bg-destructive text-white hover:bg-destructive/90 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
+        // eidolon: 周期弹窗左下的「删除这次」：destructive 字、不铺底，删前不再确认（DESIGN.md「玩法页 · 周期子页」）。
+        "ghost-destructive": "text-destructive hover:bg-destructive/10 dark:hover:bg-destructive/20",
         link: "text-primary underline-offset-4 hover:underline",
         // eidolon: 她颜色的圆按钮（发送键等，DESIGN.md「button.bg / button.fg」），要在 herVars() 的子树里用。
         her: "rounded-full bg-her-button text-her-button-fg hover:bg-her-button/80",
@@ -37,7 +39,7 @@ const buttonVariants = cva(
         // 底栏的挂断：挂断红的胶囊（白字对比度在 themeContrast.test.ts 里）。
         hangup:
           "rounded-full bg-hangup text-white hover:bg-hangup/90 focus-visible:border-transparent focus-visible:ring-white/60",
-        // eidolon: 礼物页底部提示（前景色底的反色胶囊）里的「去对话」：反过来的页面底、前景字（DESIGN.md「礼物页」）。
+        // eidolon: 礼物子页底部提示（前景色底的反色胶囊）里的「去对话」：反过来的页面底、前景字（DESIGN.md「玩法页」）。
         toast: "rounded-full bg-background text-foreground hover:bg-background/90",
         // eidolon: 统计页好感度分组收起时的「+N」和展开后的收起键（DESIGN.md「统计页」）：和头像一样的圆，中性底、muted 字。
         more: "rounded-full bg-muted text-subtitle text-muted-foreground tabular-nums hover:bg-muted/70 hover:text-foreground",
@@ -60,6 +62,8 @@ const buttonVariants = cva(
         // 底栏里的挂断胶囊和 56px 圆键，图标 20px。
         "call-dock": "h-call-dock-control gap-2 px-6 [&_svg:not([class*='size-'])]:size-5",
         "icon-call-dock": "size-call-dock-control [&_svg:not([class*='size-'])]:size-5",
+        // eidolon: 通话层输入栏里的 44px 圆键（收起输入栏、发送），图标 20px。
+        "icon-call": "size-11 [&_svg:not([class*='size-'])]:size-5",
       },
     },
     defaultVariants: {

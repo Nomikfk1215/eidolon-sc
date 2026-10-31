@@ -14,6 +14,9 @@ export {
 // 她结束了对话（GLOSSARY.md「已结束的对话」）：对话事件的分隔线和换掉输入栏的结束卡。
 export { MessageCircleOff as EndedIcon } from "lucide-react";
 
+// 她好像不太舒服（对话事件 `unwell`）：中性，不用她的颜色、不用心形。
+export { CloudDrizzle as UnwellIcon } from "lucide-react";
+
 // 记忆页、设置页用的图标（ticket 06）。
 export { Trash2 as TrashIcon } from "lucide-react";
 
@@ -40,7 +43,7 @@ export { CircleAlert as FailureIcon } from "lucide-react";
 // 设置页「已绑定」的提示和它的关闭键（shadcn-redesign 18）。
 export { CircleCheck as SuccessIcon, X as CloseIcon } from "lucide-react";
 
-// 礼物页每日任务一节里没做完的一项（做完的用 SuccessIcon）；成就面板里没集齐的「集齐」一行也用它。
+// 成就面板里没集齐的「集齐」一行。
 export { Circle as TaskOpenIcon } from "lucide-react";
 
 // 对话页更多菜单的「成就」，和解锁她的阶段时页首好感度标识左边跳出的奖杯（GLOSSARY.md「成就」）。
@@ -67,21 +70,53 @@ export { History as PastConversationsIcon, SquarePen as NewConversationIcon } fr
 // 后台用户列表可以排序的表头：按它从多到少排着的，和还没按它排的（shadcn-redesign 22）。
 export { ArrowDown as SortedIcon, ArrowUpDown as SortableIcon } from "lucide-react";
 
+// 她的气泡菜单里的「朗读」，和下面语音条的播放、暂停（GLOSSARY.md「朗读」）。
+export { Pause as PauseVoiceIcon, Play as PlayVoiceIcon, Volume2 as ReadAloudIcon } from "lucide-react";
+
 // 通话层右上角的「只看文字」胶囊。
 export { Captions as TextOnlyIcon } from "lucide-react";
 
-// 导航栏（电脑）和 dock（手机）的三项。
-export { Gift as GiftIcon, MessageCircle as ConversationsIcon, Settings as SettingsIcon } from "lucide-react";
+// 通话层底栏的打字键：点了底栏换成输入栏。
+export { Keyboard as TypingIcon } from "lucide-react";
 
-// 礼物页：抽奖台的「抽一次」和抽到稀有礼物时插画角上的闪光；我的礼物的四个类别筛选；
+// 导航栏（电脑）和 dock（手机）的三项；玩法页第一级「礼物」卡的图标也是 GiftIcon（「成就」卡用 AchievementsIcon）。
+export { MessageCircle as ConversationsIcon, Settings as SettingsIcon, Shapes as PlayIcon } from "lucide-react";
+export { Gift as GiftIcon } from "lucide-react";
+
+// 日历：玩法页第一级「日历」卡；筛选、月视图和这一天的清单里我的生日（蛋糕，角色生日的蛋糕是她的颜色）和节假日（旗子）。
+export { CalendarDays as CalendarIcon } from "lucide-react";
+export { Cake as BirthdayIcon, Flag as HolidayIcon } from "lucide-react";
+// 日历子页月视图标题两边的上个月、下个月。
+export { ChevronLeft as PreviousMonthIcon, ChevronRight as NextMonthIcon } from "lucide-react";
+// 日历子页页首末端的月 / 周切换。
+export { CalendarDays as MonthViewIcon, Rows3 as WeekViewIcon } from "lucide-react";
+// 日程：四类工作（练习、出镜、事务、私人）的图标，都不上色；保存过的工作块末尾的锁。周视图的翻页键沿用上个月、下个月那两枚。
+export {
+  Briefcase as BusinessJobIcon,
+  Camera as AppearanceJobIcon,
+  Coffee as PrivateJobIcon,
+  Lock as LockedIcon,
+  Music as PracticeJobIcon,
+} from "lucide-react";
+// 日历子页筛选里的「日程」。对话页更多菜单的「她的日程」用 CalendarIcon。
+export { CalendarCheck as ScheduleIcon } from "lucide-react";
+
+// 周期：玩法页第一级「周期」卡（中性）；周期子页记录行的铅笔、点中那一天的「改这次」，弹窗里天数的 −/+。
+export { CalendarHeart as CyclesCardIcon } from "lucide-react";
+export { Minus as FewerDaysIcon, Pencil as EditRecordIcon, Plus as MoreDaysIcon } from "lucide-react";
+// 酒吧：玩法页第一级「VA-283」卡（中性）。
+export { Martini as BarCardIcon } from "lucide-react";
+
+// 礼物子页：抽奖台的「抽一次」和抽到稀有礼物时插画角上的闪光；我的礼物的四个类别筛选；
 // 重置卡确认框里「现在的档位 → 信任」的箭头。
 export { Sparkles as DrawIcon, Sparkles as RareIcon } from "lucide-react";
 export { ArrowRight as BecomesIcon } from "lucide-react";
 export { Cookie as FoodIcon, CupSoda as DrinkIcon, Flower2 as FlowerIcon, Gem as TrinketIcon } from "lucide-react";
 
-// 设置一级的十类（档案、记忆、统计、通话用 PhoneIcon、搭话、外观、自带密钥、登录与数据、数据包、关于）和「关于」上面的「赞赏」；「关于」里新标签页打开的链接行尾的外链图标。
+// 设置一级的各类（档案、记忆、统计、通话用 PhoneIcon、搭话、周期、外观、自带密钥、登录与数据、数据包、关于）和「关于」上面的「赞赏」；「关于」里新标签页打开的链接行尾的外链图标。
 export {
   BookHeart as MemoriesIcon,
+  CalendarSync as CyclesIcon,
   HandHeart as SponsorIcon,
   ChartColumn as StatsIcon,
   CircleUser as ProfileIcon,

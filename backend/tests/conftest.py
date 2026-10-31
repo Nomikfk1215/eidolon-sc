@@ -1,21 +1,33 @@
+import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+import re
+from collections.abc import AsyncIterator, Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 import pytest
 
 import eidolon.bailian
+import eidolon.data_access
 from eidolon.__main__ import main
+from eidolon.activity import ActivityLog
 from eidolon.app import create_app
 from eidolon.assembly import Backend
+from eidolon.bar_lines import BAR_LINES_FILE
+from eidolon.bar_visits import BAR_VISITS_FILE
+from eidolon.clock import Clock
 from eidolon.config import LLMSettings, Settings
+from eidolon.data_access import Database
+from eidolon.drink_catalog import DRINKS_FILE
 from eidolon.gift_catalog import GIFTS_FILE
 from eidolon.identity import Identity
+from eidolon.job_list import JOBS_FILE
 from eidolon.sessions import SESSION_COOKIE
 from eidolon.store import Store
 from tests.browser import Browser, open_browser
@@ -24,6 +36,7 @@ from tests.fakes import (
     DEPLOYER_SONIOX_KEY,
     START,
     FakeCatalog,
+    FakeClock,
     FakeDashScope,
     FakeIdentityProvider,
     FakeLLM,
@@ -32,6 +45,51 @@ from tests.fakes import (
     build_faked,
 )
 from tests.stories import write_sample_stories
+
+# A connection to the database taken on the event loop's thread fails the test, so that
+# every path the tests run keeps the database off the loop.
+eidolon.data_access.ON_THE_LOOP_RAISES = True
+
+T = TypeVar("T")
+
+
+def aside(work: Coroutine[Any, Any, T]) -> T:
+    """What `work` comes to, run on an event loop of its own on a thread of its own and
+    waited for here, blocking: for what is done where nothing can be awaited, as a test
+    client is made, or as in another process."""
+    with ThreadPoolExecutor(1) as thread:
+        return thread.submit(asyncio.run, work).result()
+
+
+@asynccontextmanager
+async def store_in(database: Path) -> AsyncIterator[Store]:
+    """The store of the database at `database`, on a data access layer of its own, as in
+    another process."""
+    db = Database(database)
+    try:
+        yield Store(db)
+    finally:
+        await db.close()
+
+
+@asynccontextmanager
+async def activity_in(
+    database: Path, clock: Clock | None = None
+) -> AsyncIterator[ActivityLog]:
+    """The activity log of the database at `database`, on a data access layer of its own,
+    as in another process, by `clock` (a fake one's by default)."""
+    db = Database(database)
+    try:
+        yield ActivityLog(db, clock or FakeClock())
+    finally:
+        await db.close()
+
+
+async def users_in(database: Path, *names: str) -> list[str]:
+    """The ids of new users with these names, made in the database at `database` as in
+    another process."""
+    async with store_in(database) as store:
+        return [(await store.create_user(name)).id for name in names]
 
 
 class Admin:
@@ -57,7 +115,9 @@ class Admin:
 
     def _invoke(self, args: tuple[str, ...]) -> tuple[int, str, str]:
         self._capsys.readouterr()
-        code = main(["--db", str(self._database_path), *args])
+        # On a thread of its own, as in a process of its own: it runs an event loop.
+        with ThreadPoolExecutor(1) as thread:
+            code = thread.submit(main, ["--db", str(self._database_path), *args]).result()
         captured = self._capsys.readouterr()
         return code, captured.out, captured.err
 
@@ -72,11 +132,24 @@ AVATAR = b"\x89PNG\r\n\x1a\n fake avatar"
 SCSP_AVATAR = b"\xff\xd8\xff fake SCSP avatar"
 BACKGROUND = b"\xff\xd8\xff fake background"
 REPO_GIFTS = Path(__file__).parents[2] / "characters" / GIFTS_FILE
+REPO_JOBS = Path(__file__).parents[2] / "characters" / JOBS_FILE
+REPO_DRINKS = Path(__file__).parents[2] / "characters" / DRINKS_FILE
+REPO_BAR_VISITS = Path(__file__).parents[2] / "characters" / BAR_VISITS_FILE
+REPO_BAR_LINES = Path(__file__).parents[2] / "characters" / BAR_LINES_FILE
+BAR_TASTE: dict[str, object] = {
+    "bar_flavors": ["sweet"], "bar_favorites": ["sugar-rush"], "bar_tolerance": "strong",
+}
+"""Her bar tastes, the fields required and no more, as `CharacterConfig.add` writes them
+unless a test gives others: holding her drink well, so that no chance is taken on her
+wanting one without alcohol."""
 
 
 class CharacterConfig:
     """Writes a character configuration directory, the way an administrator would, with the
-    repository's gift catalog beside it unless a test writes its own (`gifts.toml`)."""
+    repository's gift catalog, job list, drink catalog, bar reasons and topics and bar lines
+    beside it unless a test writes its own (`gifts.toml`, `jobs.toml`, `drinks.toml`,
+    `bar_visits.toml`, `bar_lines.toml`). The reasons and topics are written for every character, none left
+    out (`not_for`), as the repository's leave out characters a test may not have."""
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
@@ -94,6 +167,8 @@ class CharacterConfig:
         avatar: bytes | None = None,
         scsp_avatar: bytes | None = None,
         color: str | None = "#ffbad6",
+        birthday: str | None = "07-07",
+        age: int | str | None = 20,
         background: bytes | None = None,
         speakers: list[str] | None = None,
         facts: str | None = None,
@@ -104,12 +179,16 @@ class CharacterConfig:
         other_names: tuple[str, str, str] | None = None,
         liked_gifts: tuple[str, ...] | None = ("cake",),
         photo: tuple[str, str] | None = None,
+        bar: dict[str, object] | None = BAR_TASTE,
     ) -> "CharacterConfig":
         """`greeting` is her greeting in Japanese, delivery cues and all, and its subtitle;
         `call_opener` her call opener, likewise; `other_names` her `name_zh`, `name_kana`
         and `name_romaji`; `liked_gifts` her liked gifts (None leaves them out), cake by
         default as every catalog the tests write has it; `photo` her `photo_tag` and
-        `photo_appearance`."""
+        `photo_appearance`; `bar` her bar tastes, field by field (None leaves them all out);
+        `birthday` her `"MM-DD"`, a day on which tests' clocks fall
+        on no one's birthday unless they set one (None leaves it out); `age` her age, as
+        TOML writes it, or None to leave it out."""
         entry = f'[[characters]]\nid = "{id}"\nname = "{name}"\nintro = "{intro}"\n'
         entry += f'voice_id = "{voice_id}"\nsheet = "sheets/{id}.md"\n'
         if sheet is not None:
@@ -122,6 +201,10 @@ class CharacterConfig:
             entry += f'scsp_avatar = "avatars-scsp/{id}.jpg"\n'
         if color is not None:
             entry += f'color = "{color}"\n'
+        if birthday is not None:
+            entry += f'birthday = "{birthday}"\n'
+        if age is not None:
+            entry += f"age = {age}\n"
         if background is not None:
             self.write(f"backgrounds/{id}.jpg", background)
             entry += f'background = "backgrounds/{id}.jpg"\n'
@@ -150,11 +233,23 @@ class CharacterConfig:
         if photo is not None:
             entry += f"photo_tag = {json.dumps(photo[0])}\n"
             entry += f"photo_appearance = {json.dumps(photo[1])}\n"
+        for field, value in (bar or {}).items():
+            entry += f"{field} = {json.dumps(value)}\n"
         self._entries.append(entry)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path.write_text("\n".join(self._entries), encoding="utf-8")
         if not (gifts := self.directory / GIFTS_FILE).exists():
             gifts.write_bytes(REPO_GIFTS.read_bytes())
+        if not (jobs := self.directory / JOBS_FILE).exists():
+            jobs.write_bytes(REPO_JOBS.read_bytes())
+        if not (drinks := self.directory / DRINKS_FILE).exists():
+            drinks.write_bytes(REPO_DRINKS.read_bytes())
+        if not (visits := self.directory / BAR_VISITS_FILE).exists():
+            repository = REPO_BAR_VISITS.read_text(encoding="utf-8")
+            everyones = re.sub(r"^not_for = \[[^]]*\]\n", "", repository, flags=re.M)
+            visits.write_text(everyones, encoding="utf-8")
+        if not (bar_lines := self.directory / BAR_LINES_FILE).exists():
+            bar_lines.write_bytes(REPO_BAR_LINES.read_bytes())
         return self
 
     def write(self, relative: str, content: str | bytes) -> None:
@@ -176,10 +271,12 @@ def characters(tmp_path: Path) -> CharacterConfig:
             "mano", "櫻木真乃", MANO_SHEET, intro="illumination STARS 的中心", avatar=AVATAR,
             scsp_avatar=SCSP_AVATAR, color="#ffbad6", background=BACKGROUND, speakers=["真乃"],
             voice_id="mano-voice", idol_id=1, default_outfit="stand/1030010010", photo=MANO_PHOTO,
+            birthday="04-25", age=16,
         )
         .add(
             "kogane", "月岡恋鐘", KOGANE_SHEET, intro="L'Antica 的偶像", color="#f84cad",
-            speakers=["恋鐘"], voice_id="kogane-voice",
+            speakers=["恋鐘"], voice_id="kogane-voice", birthday="02-25",
+            age=19,
         )
     )
 
@@ -202,6 +299,9 @@ def settings(tmp_path: Path, characters: CharacterConfig) -> Settings:
         secret_key="test-secret-key",
         soniox_api_key=DEPLOYER_SONIOX_KEY,
         fish_audio_api_key=DEPLOYER_FISH_KEY,
+        # Off, so that no test's clock lands in her period or the days before by chance;
+        # those of her cycle turn it on (`test_her_days`).
+        cycles=False,
     )
 
 
@@ -220,12 +320,17 @@ without a dot."""
 
 def sign_in(store: Store, name: str, now: datetime) -> httpx.Cookies:
     """The cookies of a new session for the first user named `name`, who is made, having
-    agreed to the terms, if there is none."""
-    user = store.first_user_named(name) or store.create_user(name)
+    agreed to the terms, if there is none; blocking, so that a client is made signed in
+    without awaiting anything."""
+    return aside(_signed_in(store, name, now))
+
+
+async def _signed_in(store: Store, name: str, now: datetime) -> httpx.Cookies:
+    user = await store.first_user_named(name) or await store.create_user(name)
     if user.consented_at is None:
-        store.consent(user.id, now)
+        await store.consent(user.id, now)
     cookies = httpx.Cookies()
-    cookies.set(SESSION_COOKIE, store.create_session(user.id, now), domain=COOKIE_DOMAIN)
+    cookies.set(SESSION_COOKIE, await store.create_session(user.id, now), domain=COOKIE_DOMAIN)
     return cookies
 
 
@@ -255,12 +360,13 @@ async def sign_in_with(
     identity: Identity,
     *,
     link: bool = False,
+    invite: str | None = None,
 ) -> httpx.Response:
-    """Go through signing in at `provider` as `identity`, or with `link`, linking it to the
-    signed-in user; the response to the callback."""
-    start = await client.get(
-        f"/api/auth/{provider.name}/start", params={"link": "1"} if link else None
-    )
+    """Go through signing in at `provider` as `identity`, through the invite link with the
+    code `invite` if given, or with `link`, linking it to the signed-in user; the response
+    to the callback."""
+    params = {"link": "1"} if link else {"invite": invite} if invite is not None else None
+    start = await client.get(f"/api/auth/{provider.name}/start", params=params)
     assert start.status_code == 302, start.text
     [state] = parse_qs(urlsplit(start.headers["location"]).query)["state"]
     code = provider.will_identify(identity)

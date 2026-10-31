@@ -9,7 +9,8 @@ the reranker's thresholds, and the limits (per hour, per call, and the turns eac
 carries, with the exempting keys), whether affinity and gifts are on, whether characters
 reach out to users and how often at most (GLOSSARY.md「搭话」), and which of the
 deployer's services and of users' own keys go through which proxy (GLOSSARY.md「网络代理」), and
-which services users are shown the status of, over how long (GLOSSARY.md「服务状态」). Overrides are
+which services users are shown the status of, over how long (GLOSSARY.md「服务状态」), and who
+may sign up (GLOSSARY.md「注册方式」). Overrides are
 kept in the database, one row per field, a key encrypted with a key derived from
 `EIDOLON_SECRET_KEY` (without it, keys cannot be changed here, only seen). A change to a
 service is tried before it is kept, as the chat model is when the server starts; it then holds for every turn and call that starts after
@@ -38,7 +39,7 @@ import base64
 import json
 import logging
 import os
-import threading
+import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
@@ -79,11 +80,13 @@ from eidolon.config import (
     LLMSettings,
     OWN_KEYS_PROXIED,
     PROXIED_SERVICES,
+    REGISTRATIONS,
     SERVICE_NAMES,
     STATUS_WINDOWS,
     ProxiedService,
     ProxySettings,
     ReachOutSettings,
+    Registration,
     Service,
     ServiceName,
     ServiceStatusSettings,
@@ -96,9 +99,9 @@ from eidolon.config import (
     split_proxy_password,
     with_proxy_password,
 )
-from eidolon.database import connect
+from eidolon.affinity import Days, Judged
+from eidolon.data_access import Database
 from eidolon.greetings import FishAudioSettings
-from eidolon.affinity import Judged
 from eidolon.affinity_judge import ModelAffinityJudge
 from eidolon.emotion import EmotionJudging, ModelEmotionJudge
 from eidolon.image_generation import (
@@ -143,8 +146,12 @@ RERANK = "rerank"
 LIMITS = "limits"
 AFFINITY = "affinity"
 REACH_OUTS = "reach_outs"
+SCHEDULE = "schedule"
+CYCLES = "cycles"
+BAR = "bar"
 PROXY = "proxy"
 SERVICE_STATUS = "service_status"
+REGISTRATION = "registration"
 
 LLM_FIELDS = (
     "protocol", "base_url", "api_key", "model", "max_tokens", "reasoning_effort", "extra_body",
@@ -631,6 +638,8 @@ LIMIT_LABELS = {
     "turns_per_hour": "每小时回合数",
     "calls_per_hour": "每小时通话次数",
     "photos_per_hour": "每小时照片数",
+    "visits_per_hour": "每小时光顾次数",
+    "read_alouds_per_hour": "每小时朗读次数",
     "call_minutes": "单次通话的时长上限（分钟）",
     "turns_per_call": "单次通话的回合上限",
     "concurrent_calls": "同时进行的通话数上限",
@@ -670,6 +679,8 @@ class _Limits(_Item):
             "call_minutes": limits.call_minutes or 0,
             "turns_per_call": limits.turns_per_call or 0,
             "concurrent_calls": limits.concurrent_calls or 0,
+            "visits_per_hour": limits.visits_per_hour or 0,
+            "read_alouds_per_hour": limits.read_alouds_per_hour or 0,
             "history_turns": self.c.settings.history_turns or 0,
         } | {field: s in exempting for s, field in EXEMPTING_FIELDS.items()}
 
@@ -740,6 +751,54 @@ class _ReachOuts(_Item):
         per_day = change.get("per_day", current["per_day"])
         if isinstance(per_day, bool) or not isinstance(per_day, int) or per_day < 1:
             raise ConfigInvalid(f"每位用户每天最多几次搭话需要是正整数，而不是 {per_day!r}")
+        return current | change
+
+
+class _Schedule(_Item):
+    """Whether each week's jobs are published for producers to schedule (GLOSSARY.md「日程」),
+    as `.env` has it (on by default); not tried."""
+
+    name = SCHEDULE
+    fields = ("enabled",)
+
+    def env(self) -> Values:
+        return {"enabled": self.c.settings.schedule}
+
+    def candidate(self, current: Values, change: Values) -> Values:
+        if not isinstance(change.get("enabled"), bool):
+            raise ConfigInvalid(f"日程需要是 true 或 false，而不是 {change.get('enabled')!r}")
+        return current | change
+
+
+class _Cycles(_Item):
+    """Whether her cycle has a part in how she is (GLOSSARY.md「周期」), as `.env` has it (on
+    by default); not tried."""
+
+    name = CYCLES
+    fields = ("enabled",)
+
+    def env(self) -> Values:
+        return {"enabled": self.c.settings.cycles}
+
+    def candidate(self, current: Values, change: Values) -> Values:
+        if not isinstance(change.get("enabled"), bool):
+            raise ConfigInvalid(f"周期需要是 true 或 false，而不是 {change.get('enabled')!r}")
+        return current | change
+
+
+class _Bar(_Item):
+    """Whether the bar is open (GLOSSARY.md「酒吧」), as `.env` has it (on by default); not
+    tried."""
+
+    name = BAR
+    fields = ("enabled",)
+
+    def env(self) -> Values:
+        return {"enabled": self.c.settings.bar}
+
+    def candidate(self, current: Values, change: Values) -> Values:
+        if not isinstance(change.get("enabled"), bool):
+            raise ConfigInvalid(f"酒吧需要是 true 或 false，而不是 {change.get('enabled')!r}")
         return current | change
 
 
@@ -854,6 +913,24 @@ class _ServiceStatus(_Item):
         return current | change
 
 
+class _Registration(_Item):
+    """Who may sign up (GLOSSARY.md「注册方式」): anyone, or only those who bring an invite
+    link, as `.env` has it (anyone by default); not tried."""
+
+    name = REGISTRATION
+    fields = ("mode",)
+
+    def env(self) -> Values:
+        return {"mode": self.c.settings.registration}
+
+    def candidate(self, current: Values, change: Values) -> Values:
+        if change.get("mode") not in REGISTRATIONS:
+            raise ConfigInvalid(
+                f"注册方式只能是 {'、'.join(REGISTRATIONS)}，而不是 {change.get('mode')!r}"
+            )
+        return current | change
+
+
 def _proxy_settings(values: Values) -> ProxySettings:
     url = values["url"]
     return ProxySettings(
@@ -882,14 +959,16 @@ class LiveConfig:
         clients: ServiceClients,
         clock: Clock,
         *,
+        db: Database,
         activity: ActivityLog,
         speech: KeyCheck | None = None,
         routes: ProxyRoutes | None = None,
         reach: Reach = reach_provider,
         image_client: httpx.AsyncClient | None = None,
     ) -> None:
-        """The chat, memory and judge models are made by `clients`, each question to the
-        judge model recorded in `activity`; `speech` tries the keys for speech synthesis
+        """The overrides are kept in the database `db` is on. The chat, memory and judge
+        models are made by `clients`, each question to the judge model recorded in
+        `activity`; `speech` tries the keys for speech synthesis
         and recognition. Each service goes through the proxy or direct as `routes` have
         it, kept to the proxy settings in effect; a change to them is tried by `reach`.
         Image generation is on `image_client`, by default the routes' for it."""
@@ -902,27 +981,18 @@ class LiveConfig:
         self._speech = speech
         self._activity = activity
         self._cipher = _cipher(settings.secret_key) if settings.secret_key else None
-        self._db = connect(settings.database_path)
-        self._db_lock = threading.Lock()
+        self._db = db
         self._changing = asyncio.Lock()
-        self._listeners: list[Callable[[], None]] = []
-        with self._db_lock, self._db:
-            self._db.executescript(_SCHEMA)
-            # Whether users had to bring their own LLM, which no longer is a setting.
-            self._db.execute("DELETE FROM config_overrides WHERE name = 'limits.own_llm_required'")
-            self._rows = {
-                name: _Row(value, last4)
-                for name, value, last4 in self._db.execute(
-                    "SELECT name, value, last4 FROM config_overrides"
-                )
-            }
+        self._listeners: list[Callable[[], Awaitable[None]]] = []
+        self._rows = db.prepare(_open)
         self._items: dict[str, _Item] = {
             item.name: item
             for item in (
                 # The proxy first: as the server starts, the services are tried through it.
                 _Proxy(self), _ChatLLM(self), _MemoryLLM(self), _TTS(self), _STT(self),
                 _Image(self), _Judge(self), _JudgeThresholds(self), _Rerank(self),
-                _Limits(self), _Affinity(self), _ReachOuts(self), _ServiceStatus(self),
+                _Limits(self), _Affinity(self), _ReachOuts(self), _Schedule(self),
+                _Cycles(self), _Bar(self), _ServiceStatus(self), _Registration(self),
             )
         }
         self._failures: dict[str, str] = {}
@@ -1013,6 +1083,8 @@ class LiveConfig:
             values["turns_per_call"] or None,
             values["photos_per_hour"] or None,
             values["concurrent_calls"] or None,
+            values["visits_per_hour"] or None,
+            values["read_alouds_per_hour"] or None,
         )
 
     @property
@@ -1034,6 +1106,21 @@ class LiveConfig:
         most."""
         values = self.effective(REACH_OUTS)
         return ReachOutSettings(values["enabled"], values["per_day"])
+
+    @property
+    def schedule_on(self) -> bool:
+        """Whether each week's jobs are published for producers to schedule now."""
+        return self.effective(SCHEDULE)["enabled"]
+
+    @property
+    def cycles_on(self) -> bool:
+        """Whether the deployment has her cycle have a part in how she is now."""
+        return self.effective(CYCLES)["enabled"]
+
+    @property
+    def bar_on(self) -> bool:
+        """Whether the bar is open now."""
+        return self.effective(BAR)["enabled"]
 
     @property
     def proxy_settings(self) -> ProxySettings:
@@ -1110,6 +1197,11 @@ class LiveConfig:
         """The deployer's image generation in effect now, to generate on; None without it."""
         settings = self.image_settings
         return None if settings is None else ImageGenerator(settings, self._images)
+
+    @property
+    def registration(self) -> Registration:
+        """Who may sign up now."""
+        return self.effective(REGISTRATION)["mode"]
 
     @property
     def history_turns(self) -> int | None:
@@ -1222,7 +1314,7 @@ class LiveConfig:
                 self._failures[item.name] = str(e)
                 await item.apply(self.effective(item.name))
                 if item.name == JUDGE:
-                    self._judge_changed(values, self.effective(item.name), clear=False)
+                    await self._judge_changed(values, self.effective(item.name), clear=False)
                 log.warning(
                     "the admin console's override of %s failed, so .env's is used until an"
                     " admin fixes or restores it: %s",
@@ -1299,10 +1391,10 @@ class LiveConfig:
             values, prepared = await item.tried(values)
             if item.bound_model() is not None:
                 values[FOR_MODEL] = item.bound_model()
-            self._write(item, values, keep={f for f in item.secrets if f not in change})
+            await self._write(item, values, keep={f for f in item.secrets if f not in change})
             self._failures.pop(name, None)
             await item.apply(values, prepared)
-            self._changed(name, current, values)
+            await self._changed(name, current, values)
 
     async def restore(self, name: str) -> None:
         """Delete the item's overrides, so that `.env`'s holds from now on."""
@@ -1311,40 +1403,38 @@ class LiveConfig:
             raise Unavailable(item.unavailable_reason)
         async with self._changing:
             before = self.effective(name)
-            self._delete(name)
+            await self._delete(name)
             after = self.effective(name)
             if after != before:
                 await item.apply(after)
-            self._changed(name, before, after)
+            await self._changed(name, before, after)
 
-    def on_change(self, listener: Callable[[], None]) -> None:
+    def on_change(self, listener: Callable[[], Awaitable[None]]) -> None:
         """Have `listener` called after each item an admin saves or restores, whether or not
         it changed what is in effect."""
         self._listeners.append(listener)
 
-    def _changed(self, name: str, before: dict[str, Any], after: dict[str, Any]) -> None:
+    async def _changed(self, name: str, before: dict[str, Any], after: dict[str, Any]) -> None:
         """Item `name` went from `before` to `after`."""
         if name == JUDGE:
-            self._judge_changed(before, after, clear=True)
+            await self._judge_changed(before, after, clear=True)
         for listener in self._listeners:
-            listener()
+            await listener()
 
-    def _judge_changed(self, before: Values, after: Values, *, clear: bool) -> None:
+    async def _judge_changed(self, before: Values, after: Values, *, clear: bool) -> None:
         """The judge model went from `before`'s to `after`'s: a model not calibrated is
         warned of, and with `clear`, thresholds that no longer hold for it go."""
         if after["model"] == before["model"]:
             return
         warn_if_uncalibrated(after["model"])
         if clear and not same_judge_family(before["model"], after["model"]):
-            self._delete(JUDGE_THRESHOLDS)
+            await self._delete(JUDGE_THRESHOLDS)
 
     async def aclose(self) -> None:
         await self._chat.aclose()
         await self._memory.aclose()
         if self._judge is not None:
             await self._judge.aclose()
-        with self._db_lock:
-            self._db.close()
 
     def _judge_settings(self, values: Values) -> JudgeSettings:
         if values["provider"] == "cloudflare":
@@ -1498,7 +1588,7 @@ class LiveConfig:
                 values[field] = json.loads(row.value)
         return values
 
-    def _write(self, item: _Item, values: Values, *, keep: set[str]) -> None:
+    async def _write(self, item: _Item, values: Values, *, keep: set[str]) -> None:
         """Keep as the item's overrides every field of `values` that differs from
         `.env`'s; a key kept as it was (in `keep`) is not encrypted again."""
         env = item.env()
@@ -1524,18 +1614,7 @@ class LiveConfig:
             rows[f"{item.name}.{FOR_MODEL}"] = (
                 _Row(json.dumps(values[FOR_MODEL]), None) if kept else None
             )
-        with self._db_lock, self._db:
-            for name, row in rows.items():
-                if row is None:
-                    self._db.execute("DELETE FROM config_overrides WHERE name = ?", (name,))
-                else:
-                    self._db.execute(
-                        "INSERT INTO config_overrides (name, value, last4, updated_at)"
-                        " VALUES (?, ?, ?, ?) ON CONFLICT (name) DO UPDATE SET"
-                        " value = excluded.value, last4 = excluded.last4,"
-                        " updated_at = excluded.updated_at",
-                        (name, row.value, row.last4, now),
-                    )
+        await self._db.write(_keep, rows, now)
         for name, row in rows.items():
             if row is None:
                 self._rows.pop(name, None)
@@ -1546,15 +1625,15 @@ class LiveConfig:
         else:
             self._overrides.pop(item.name, None)
 
-    def _delete(self, name: str) -> None:
-        with self._db_lock, self._db:
-            self._db.execute("DELETE FROM config_overrides WHERE name LIKE ?", (f"{name}.%",))
+    async def _delete(self, name: str) -> None:
+        await self._db.write(_forget, name)
         self._rows = {n: r for n, r in self._rows.items() if not n.startswith(f"{name}.")}
         self._overrides.pop(name, None)
         self._failures.pop(name, None)
 
     def _read_only(self) -> list[dict[str, Any]]:
-        """What is only shown, with why: never a key, only whether it is set."""
+        """What is only shown, with why: never a key, only whether it is set; the admins,
+        `everyone` while everyone is one (`Settings.everyone_admin`)."""
         s = self.settings
         turn = s.turn.urls if s.turn else []
         ice = [u for server in s.ice_servers for u in _urls(server["urls"])]
@@ -1562,7 +1641,8 @@ class LiveConfig:
             f"{s.embedding.provider} · {s.embedding.model}" if s.embedding else None
         )
         values: dict[str, Any] = {
-            "admins": sorted(f"{p}:{subject}" for p, subject in s.admins),
+            "admins": "everyone" if s.everyone_admin
+            else sorted(f"{p}:{subject}" for p, subject in s.admins),
             "secret_key": s.secret_key is not None,
             "oauth": [name for name, o in (("github", s.github), ("google", s.google)) if o],
             "domain": s.domain,
@@ -1595,6 +1675,7 @@ class LiveRetrievalJudge:
         text: str,
         affinity: bool = False,
         photo: bool = False,
+        days: Days | None = None,
         tier: str | None = None,
     ) -> tuple[Need, Judged | None, bool]:
         lease = self._judge.lease()
@@ -1604,7 +1685,7 @@ class LiveRetrievalJudge:
                 self._activity,
                 judge_origin(lease.settings),
             )
-            return await judge.judge(character, history, text, affinity, photo, tier=tier)
+            return await judge.judge(character, history, text, affinity, photo, days, tier=tier)
         finally:
             lease.release()
 
@@ -1631,6 +1712,7 @@ class LiveAffinityJudge:
         text: str,
         affinity: bool = True,
         photo: bool = False,
+        days: Days | None = None,
         tier: str | None = None,
     ) -> tuple[Judged | None, bool]:
         lease = self._judge.lease()
@@ -1640,9 +1722,40 @@ class LiveAffinityJudge:
                 self._activity,
                 judge_origin(lease.settings),
             )
-            return await judge.judge(character, history, text, affinity, photo, tier=tier)
+            return await judge.judge(character, history, text, affinity, photo, days, tier=tier)
         finally:
             lease.release()
+
+
+def _open(db: sqlite3.Connection) -> dict[str, _Row]:
+    """The overrides kept, the table made if need be."""
+    db.executescript(_SCHEMA)
+    # Whether users had to bring their own LLM, which no longer is a setting.
+    db.execute("DELETE FROM config_overrides WHERE name = 'limits.own_llm_required'")
+    return {
+        name: _Row(value, last4)
+        for name, value, last4 in db.execute("SELECT name, value, last4 FROM config_overrides")
+    }
+
+
+def _keep(db: sqlite3.Connection, rows: dict[str, _Row | None], now: str) -> None:
+    """Keep each of `rows` as it is, deleting those None."""
+    for name, row in rows.items():
+        if row is None:
+            db.execute("DELETE FROM config_overrides WHERE name = ?", (name,))
+        else:
+            db.execute(
+                "INSERT INTO config_overrides (name, value, last4, updated_at)"
+                " VALUES (?, ?, ?, ?) ON CONFLICT (name) DO UPDATE SET"
+                " value = excluded.value, last4 = excluded.last4,"
+                " updated_at = excluded.updated_at",
+                (name, row.value, row.last4, now),
+            )
+
+
+def _forget(db: sqlite3.Connection, name: str) -> None:
+    """Delete the overrides of the item `name`."""
+    db.execute("DELETE FROM config_overrides WHERE name LIKE ?", (f"{name}.%",))
 
 
 def _check_ranges(item: _Item, values: Values) -> None:

@@ -25,7 +25,6 @@ from typing import cast
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
 
 from eidolon.affinity import day_of
 from eidolon.assembly import Backend
@@ -39,7 +38,7 @@ from eidolon.data_package import (
     TooLarge,
     TooNew,
 )
-from eidolon.sessions import UserId
+from eidolon.sessions import DeviceTimezone, UserId
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +91,7 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
         path = _temporary_file()
         try:
             with packages.one_at_a_time(user_id):
-                await run_in_threadpool(packages.export, user_id, categories, path)
+                await packages.export(user_id, categories, path)
         except BaseException as e:
             path.unlink(missing_ok=True)
             if not isinstance(e, Busy):
@@ -106,7 +105,9 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
         )
 
     @app.post("/api/account/data-package")
-    async def import_data_package(request: Request, user_id: UserId, include: str = "") -> dict:
+    async def import_data_package(
+        request: Request, user_id: UserId, include: str = "", device_timezone: DeviceTimezone = None
+    ) -> dict:
         """Import the package in the request body, the zip itself, into the user's data: the
         categories both `include` names and the package holds. What it added
         (`data_package.Imported`). One at a time for each user, and so many a day; the body
@@ -118,7 +119,7 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
         path = _temporary_file()
         try:
             with packages.one_at_a_time(user_id):
-                await run_in_threadpool(packages.check_imports_left, user_id)
+                await packages.check_imports_left(user_id)
                 with path.open("wb") as file:
                     size = 0
                     async for chunk in request.stream():
@@ -126,7 +127,7 @@ def add_data_package_routes(app: FastAPI, backend: Backend) -> None:
                         if size > limit:
                             raise TooLarge()
                         file.write(chunk)
-                imported = await packages.import_(user_id, path, categories)
+                imported = await packages.import_(user_id, path, categories, device_timezone)
         except (Busy, ImportsUsedUp, TooLarge, TooNew, BrokenPackage):
             raise
         except Exception:

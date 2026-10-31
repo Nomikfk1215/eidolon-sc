@@ -24,10 +24,19 @@ export const DASHBOARD_TABS = ["overview", "usage", "affinity", "cost"] as const
 
 export type DashboardTab = (typeof DASHBOARD_TABS)[number];
 
-/** The tabs a dashboard has:「好感度」only where affinity is on, or daily tasks were done in the
- * range while it was. */
-export function dashboardTabs(board: Pick<Dashboard, "affinity" | "daily_tasks">): DashboardTab[] {
-  return DASHBOARD_TABS.filter((name) => name !== "affinity" || board.affinity !== null || board.daily_tasks !== null);
+/** The tabs a dashboard has:「好感度」only where affinity is on, achievements were unlocked in the
+ * range while it was, or schedules or cycles are on (their tiles are there). */
+export function dashboardTabs(
+  board: Pick<Dashboard, "affinity" | "achievements" | "scheduled_this_week" | "recorded_cycles">,
+): DashboardTab[] {
+  return DASHBOARD_TABS.filter(
+    (name) =>
+      name !== "affinity" ||
+      board.affinity !== null ||
+      board.achievements !== null ||
+      board.scheduled_this_week !== null ||
+      board.recorded_cycles !== null,
+  );
 }
 
 export function isDashboardTab(value: string): value is DashboardTab {
@@ -241,13 +250,20 @@ export type Dashboard = {
   affinity: AffinitySection | null;
   /** Her reach-outs (GLOSSARY「搭话」); null where they are off and none were made in the range. */
   reach_outs: ReachOutsSection | null;
-  /** How many times each daily task was done (GLOSSARY「每日任务」); null where affinity is off and
-   * none were done in the range. */
-  daily_tasks: DailyTasksSection | null;
-  /** The achievements' stages unlocked and what they gave (GLOSSARY「成就」); null where `daily_tasks` is. */
+  /** Visits to the bar (GLOSSARY「光顾」); null where the bar is closed and none were made in the
+   * range. */
+  bar: BarSection | null;
+  /** The achievements' stages unlocked and what they gave (GLOSSARY「成就」); null where affinity is
+   * off and none were unlocked in the range. */
   achievements: AchievementsSection | null;
   /** What the deployer's keys cost, estimated at the prices (`lib/adminPrices`). */
   cost: Cost;
+  /** How many users saved a schedule for this Beijing week (GLOSSARY「日程」), whatever the range;
+   * null where schedules are off. */
+  scheduled_this_week: number | null;
+  /** How many users have written down any period (GLOSSARY「周期」), whatever the range; null
+   * where the deployer has cycles off. */
+  recorded_cycles: number | null;
 };
 
 /** The dashboard's「搭话」section: how many times characters reached out, how many times that
@@ -269,28 +285,44 @@ export function reachOutTiles(section: ReachOutsSection | null): { id: string; l
   ];
 }
 
-/** The dashboard's「每日任务」section: how many times each daily task was done, by its id. */
-export type DailyTasksSection = { one_turn: number; one_gift: number; ten_turns: number };
+/** The dashboard's「酒吧」section: how many visits were begun (not those rejected over the
+ * limit), how many were done, and how many failed. */
+export type BarSection = { visits: number; done: number; failed: number };
 
-const DAILY_TASK_IDS = ["one_turn", "one_gift", "ten_turns"] as const;
-
-/** The section's tiles, as the page shows them, in the order of the gifts page; none where it is empty. */
-export function dailyTaskTiles(section: DailyTasksSection | null): { id: string; label: string; value: string }[] {
+/** The section's tiles, as the page shows them; none where it is empty. */
+export function barTiles(section: BarSection | null): { id: string; label: string; value: string }[] {
   if (section === null) return [];
-  const words = copy.admin.dashboard.tasksAndAchievements.tiles;
-  return DAILY_TASK_IDS.map((id) => ({ id, label: words[id], value: formatCount(section[id]) }));
+  const words = copy.admin.dashboard.bar.tiles;
+  return [
+    { id: "visits", label: words.visits, value: formatCount(section.visits) },
+    { id: "done", label: words.done, value: formatCount(section.done) },
+    { id: "failed", label: words.failed, value: formatCount(section.failed) },
+  ];
 }
 
-/** The dashboard's achievements, beside the daily tasks: how many stages were unlocked, the draw
- * chances they gave, and the reset cards characters complete gave. */
+/** The「日程」tile under「好感度」, as the page shows it; none where schedules are off. */
+export function scheduleTiles(scheduledThisWeek: number | null): { id: string; label: string; value: string }[] {
+  if (scheduledThisWeek === null) return [];
+  const words = copy.admin.dashboard.schedule.tiles;
+  return [{ id: "scheduled", label: words.scheduled, value: formatCount(scheduledThisWeek) }];
+}
+
+/** The「周期」tile, as the page shows it; none where cycles are off. */
+export function cycleTiles(recordedCycles: number | null): { id: string; label: string; value: string }[] {
+  if (recordedCycles === null) return [];
+  return [{ id: "recorded", label: copy.admin.dashboard.cycles.tiles.recorded, value: formatCount(recordedCycles) }];
+}
+
+/** The dashboard's「成就」section: how many stages were unlocked, the draw chances they gave, and
+ * the reset cards characters complete gave. */
 export type AchievementsSection = { stages: number; draws: number; reset_cards: number };
 
 const ACHIEVEMENT_TILE_IDS = ["stages", "draws", "reset_cards"] as const;
 
-/** The achievements' tiles, as the page shows them after the daily tasks'; none where they are empty. */
+/** The section's tiles, as the page shows them; none where it is empty. */
 export function achievementTiles(section: AchievementsSection | null): { id: string; label: string; value: string }[] {
   if (section === null) return [];
-  const words = copy.admin.dashboard.tasksAndAchievements.tiles;
+  const words = copy.admin.dashboard.achievements.tiles;
   return ACHIEVEMENT_TILE_IDS.map((id) => ({ id, label: words[id], value: formatCount(section[id]) }));
 }
 

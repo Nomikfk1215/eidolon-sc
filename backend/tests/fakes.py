@@ -13,6 +13,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 import zipfile
+import zlib
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlencode
 
@@ -65,10 +66,11 @@ from eidolon.llm import (
     ToolCall,
 )
 from eidolon.llm.providers import check_chat_models
+from eidolon import official_cdn
 from eidolon.mirror import Mirror
 from eidolon.own_keys import OwnKeyRejected
 from eidolon.affinity_judge import LEVEL as AFFINITY_LEVEL
-from eidolon.affinity_judge import MANIPULATION, OUT_OF_LINE
+from eidolon.affinity_judge import CONSIDERATE_QUESTION, MANIPULATION, OUT_OF_LINE
 from eidolon.judge import SAID, JudgeError
 from eidolon.photo_judge import PHOTO
 
@@ -142,7 +144,8 @@ class FakeLLM:
 
     Each scripted reply is a list of text chunks, tool calls and reasoning, streamed in
     order, so tests can split the structured reply at awkward boundaries or have the model
-    call a tool; a reply that is an LLMError is raised instead, as a failing service would. With
+    call a tool; a reply that is an LLMError is raised instead, as a failing service would,
+    and a chunk that is one, part-way through the reply. With
     a `delay`, it waits that many seconds before each chunk after the first, as a slow
     model would; at `HANG` it waits forever, and at an `asyncio.Event` till it is set.
     Unless reached through a FakeLLMService, it is the deployer's model. With `tokens`, each
@@ -199,6 +202,8 @@ class FakeLLM:
             if isinstance(chunk, asyncio.Event):
                 await chunk.wait()
                 continue
+            if isinstance(chunk, LLMError):
+                raise chunk
             assert isinstance(chunk, str | ToolCall | Reasoning)
             yield chunk
         if self._tokens is not None:
@@ -407,12 +412,14 @@ class _ConfiguredLLM:
 class Judging:
     """A script for what the judge model makes of one turn's affinity: how likely each
     level is (each level the only one by default, `level`), whether it is out of line,
-    whether it tries to dictate her affinity; or that the request fails."""
+    whether it tries to dictate her affinity, which of the considerate question's three it
+    is if that is asked (unrelated by default); or that the request fails."""
 
     levels: Mapping[int, float] = field(default_factory=lambda: {2: 1.0})
     out_of_line: bool = False
     manipulation: bool = False
     fails: bool = False
+    considerate: int = 1
 
     def answers(self) -> dict[str, Any]:
         return {
@@ -422,9 +429,16 @@ class Judging:
         }
 
 
-def level(n: int, **judging: bool) -> Judging:
+def level(
+    n: int,
+    *,
+    out_of_line: bool = False,
+    manipulation: bool = False,
+    fails: bool = False,
+    considerate: int = 1,
+) -> Judging:
     """A turn judged at level `n` for sure."""
-    return Judging({n: 1.0}, **judging)
+    return Judging({n: 1.0}, out_of_line, manipulation, fails, considerate)
 
 
 class FakeJudgeModel:
@@ -437,7 +451,8 @@ class FakeJudgeModel:
     recording what they said (`photo_asked`). Records the key each request came with and what
     it asked (`asked`: "turn", with or without affinity's questions and the photo's,
     "affinity" for those alone, with or without the photo's, "photo" for that alone,
-    "emotion" or "check"), and everything it was told of each (`states`)."""
+    "emotion" or "check"), and everything it was told of each (`states`) and asked of it
+    (`questions`)."""
 
     def __init__(self) -> None:
         self.needs: FakeJudge | None = None
@@ -450,6 +465,7 @@ class FakeJudgeModel:
         self.photo = 0.0
         self.photo_asked: list[str] = []
         self.states: list[dict[str, Any]] = []
+        self.questions: list[dict[str, dict]] = []
 
     async def answer(
         self, key: str, state: dict[str, Any], questions: dict[str, dict]
@@ -463,6 +479,7 @@ class FakeJudgeModel:
         )
         self.asked.append((key, kind))
         self.states.append(state)
+        self.questions.append(questions)
         scripted: dict[str, Any] = {}
         if AFFINITY_LEVEL in questions:
             self.affinity_asked.append(state[SAID])
@@ -470,6 +487,8 @@ class FakeJudgeModel:
             if judging.fails:
                 raise JudgeError("fake judge model is down")
             scripted = judging.answers()
+            if CONSIDERATE_QUESTION in questions:
+                scripted[CONSIDERATE_QUESTION] = {"probabilities": {str(judging.considerate): 1.0}}
         if PHOTO in questions:
             self.photo_asked.append(state[SAID])
             scripted |= {PHOTO: {"noul": self.photo}}
@@ -1163,13 +1182,43 @@ class KeywordReranker:
         return sorted(scored, key=lambda r: -r[1])[:top_n]
 
 
+class FakeEnzaAssets:
+    """Stands in for the game's own asset server: the files it is given, under the hash
+    of their path, JSON and atlases encrypted as it sends them, and the game's page, as
+    HTML, for a path it has no file for. Records the paths it sent. Set `down` to have it
+    unreachable, or `maintenance` to have it answer everything with the game's page."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+        self.sent: list[str] = []
+        self.down = False
+        self.maintenance = False
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if self.down:
+            raise httpx.ConnectError("connection refused", request=request)
+        path = next((path for path in self.files if official_cdn.asset_url(path) == str(request.url)), None)
+        if path is None or self.maintenance:
+            return httpx.Response(200, text="<!DOCTYPE html><title>シャニマス</title>",
+                                  headers={"Content-Type": "text/html; charset=utf-8"})
+        self.sent.append(path)
+        content = self.files[path]
+        if path.endswith((".json", ".atlas")):  # gzipped up to a flush, never finished
+            gzipper = zlib.compressobj(wbits=zlib.MAX_WBITS | 16)
+            content = official_cdn.xor(gzipper.compress(content) + gzipper.flush(zlib.Z_SYNC_FLUSH))
+        return httpx.Response(200, content=content, headers={"ETag": f'W/"{hashlib.md5(content).hexdigest()}"'})
+
+
 class FakeShinyColorsDB:
     """Stands in for the ShinyColorsDB API, the viewer that mirrors the game's scripts and
     the idols' albums, answering as they do: idols and their cards, each card's episodes,
     albums, and scripts; scripts and albums with an ETag, 304 to a request for a copy that
     is still current and 404 for one it does not have. Records every request, and which
     scripts (and albums, as `album/NN`) it sent in full. Set `down`
-    to have it unreachable, or `down_after` to have it go down after that many requests."""
+    to have it unreachable, or `down_after` to have it go down after that many requests;
+    `viewer_down` to have only the viewer unreachable, `cdn_pages` to have the CDN answer
+    for a stand's file with an error page. Behind it, the game's asset server
+    (`official`), which has nothing unless given it."""
 
     def __init__(self) -> None:
         self.idols: dict[int, list[dict]] = {}
@@ -1180,6 +1229,9 @@ class FakeShinyColorsDB:
         self.sent: list[str] = []
         self.down = False
         self.down_after: int | None = None
+        self.viewer_down = False
+        self.cdn_pages = False
+        self.official = FakeEnzaAssets()
 
     def add_card(
         self, idol: int, uuid: str, name: str, type: str, episodes: Sequence[tuple[int, str]] = ()
@@ -1220,6 +1272,8 @@ class FakeShinyColorsDB:
         return Mirror(httpx.AsyncClient(transport=httpx.MockTransport(self._handle)), interval=0)
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "shinycolors.enza.fun":
+            return self.official.handle(request)
         self.requests.append(request)
         if self.down or (self.down_after is not None and len(self.requests) > self.down_after):
             raise httpx.ConnectError("connection refused")
@@ -1234,10 +1288,14 @@ class FakeShinyColorsDB:
                 return httpx.Response(200, json={key: self.events[params["cardId"]]})
             return httpx.Response(404)
         if request.url.host == "cf-static.shinycolors.moe":
+            if not path.startswith("/albums/"):  # the stands, which are another fake's
+                return httpx.Response(200 if self.cdn_pages else 404, text="<html>Not Found</html>")
             idol = int(path.removeprefix("/albums/album/").removesuffix(".json"))
             album = self.albums.get(idol)
             body = None if album is None else json.dumps(album, ensure_ascii=False).encode()
             return self._send(request, f"album/{idol:02d}", body)
+        if self.viewer_down:
+            raise httpx.ConnectError("connection refused")
         script = path.removeprefix("/json/").removesuffix(".json")
         return self._send(request, script, self.scripts.get(script))
 

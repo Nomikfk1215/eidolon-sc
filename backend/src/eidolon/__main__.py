@@ -37,6 +37,11 @@
     eidolon stand upload             upload the outfits the lists name, their thumbnails and
                                      the lists to the S3-compatible bucket, skipping what it
                                      has as it is; exits 2 if the bucket failed
+    eidolon bar upload <audio dir>   upload the original game's tracks and sound effects
+                                     the bar's audio list names, from the deployer's
+                                     extracted audio directory, to the stands' bucket, and
+                                     last the manifest of what it has; exits 2 if the
+                                     bucket failed, 3 if some files were missing
     eidolon reading draft            draft the readings file beside the character
                                      configuration from the characters' sheets and the
                                      world setting, or fill in the phonemes it lacks and
@@ -60,6 +65,10 @@
                                      stopped (deploy/db-restore.sh), if it is whole and has
                                      this project's tables, leaving it alone if not; and
                                      say how many users it has; --check only checks it
+    eidolon doctor [--json]          try each service .env configures, the way the server
+                                     reaches it, through the proxy and direct, and say
+                                     what is wrong and what to change; exits 1 if anything
+                                     is (docs/agents/deploying.md)
     eidolon reembed                  after changing the embedding service, model or
                                      dimensions, embed the story corpus, character facts,
                                      work facts, and memories again from
@@ -97,6 +106,7 @@ from eidolon.config import (
     mirror_cache_path_from_env,
     story_path_from_env,
 )
+from eidolon.data_access import Database
 from eidolon.identity import PROVIDER_LABELS
 from eidolon.store import NotFound, Store
 from eidolon.usage import Tally, UsageLimiter
@@ -107,6 +117,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command in (None, "serve"):
         return _serve()
+    if args.command == "doctor":
+        from eidolon.doctor import run
+
+        return asyncio.run(run(args.json))
     if args.command == "story" and args.action == "sync":
         return asyncio.run(_sync_story(args))
     if args.command == "story":
@@ -121,6 +135,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _stand_outfits(args)
     if args.command == "stand":
         return asyncio.run(_stand_upload(args))
+    if args.command == "bar":
+        return asyncio.run(_bar_upload(args))
     if args.command == "reading":
         return _draft_readings(args)
     if args.command == "greeting":
@@ -138,14 +154,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "eval":
         return asyncio.run(_eval_rerank(args))
 
-    store = Store(args.db or database_path_from_env())
+    return asyncio.run(_user_command(args))
+
+
+async def _user_command(args: argparse.Namespace) -> int:
+    from eidolon.data_access import Database
+
+    db = Database(args.db or database_path_from_env())
     try:
-        args.run(store, args)
+        await args.run(db, args)
     except NotFound as e:
         print(e, file=sys.stderr)
         return 1
     finally:
-        store.close()
+        await db.close()
     return 0
 
 
@@ -251,6 +273,7 @@ async def _import_story(args: argparse.Namespace) -> int:
     from eidolon.characters import load_characters
     from eidolon.config import EmbeddingSettings
     from eidolon.corpus import StoryCorpus
+    from eidolon.data_access import Database
     from eidolon.embedding import EmbeddingError, open_embedder
     from eidolon.story_import import import_csv_directory, import_json_directory
 
@@ -265,15 +288,16 @@ async def _import_story(args: argparse.Namespace) -> int:
         return 1
     embedder = open_embedder(settings)
     try:
-        corpus = StoryCorpus(args.db or database_path_from_env(), embedder)
+        db = Database(args.db or database_path_from_env())
         try:
+            corpus = StoryCorpus(db, embedder)
             import_stories = (
                 import_json_directory if args.action == "import-json" else import_csv_directory
             )
             report = await import_stories(args.directory, corpus, characters.values())
-            catalogs = {c.name: corpus.catalog(c.id) for c in characters.values()}
+            catalogs = {c.name: await corpus.catalog(c.id) for c in characters.values()}
         finally:
-            corpus.close()
+            await db.close()
     except EmbeddingError as e:
         print(f"导入中断（已导入的剧情会保留，重新运行即可继续）：{e}", file=sys.stderr)
         return 1
@@ -302,6 +326,7 @@ async def _sync_story(args: argparse.Namespace) -> int:
     from eidolon.characters import load_characters
     from eidolon.config import EmbeddingSettings
     from eidolon.corpus import StoryCorpus
+    from eidolon.data_access import Database
     from eidolon.embedding import EmbeddingError, open_embedder
     from eidolon.mirror import Mirror
     from eidolon.story_sync import load_event_names, sync_stories
@@ -322,25 +347,25 @@ async def _sync_story(args: argparse.Namespace) -> int:
 
     progress = logging.StreamHandler()  # the first sync takes an hour or two
     progress.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
-    for name in ("eidolon.story_sync", "eidolon.story_import"):
+    for name in ("eidolon.story_sync", "eidolon.story_import", "eidolon.mirror"):
         logging.getLogger(name).addHandler(progress)
         logging.getLogger(name).setLevel(logging.INFO)
     embedder = open_embedder(settings)
     mirror = Mirror()
     try:
-        corpus = StoryCorpus(args.db or database_path_from_env(), embedder)
+        db = Database(args.db or database_path_from_env())
         try:
             report = await sync_stories(
                 story,
                 args.cache or mirror_cache_path_from_env(),
-                corpus,
+                StoryCorpus(db, embedder),
                 characters.values(),
                 mirror,
                 event_names=event_names,
                 idols=args.idol,
             )
         finally:
-            corpus.close()
+            await db.close()
     except EmbeddingError as e:
         print(f"同步中断（已导入的剧情和已下载的剧本会保留，重新运行即可继续）：{e}", file=sys.stderr)
         return 1
@@ -361,9 +386,9 @@ async def _sync_story(args: argparse.Namespace) -> int:
         f"本次检查的卡牌和相册中有 {report.translations_kept} 段已有汉化版，保留汉化版"
     )
     if report.missing:
-        print(f"卡牌列出的剧本中有 {report.missing} 个镜像上还没有，下次同步再试")
+        print(f"卡牌列出的剧本中有 {report.missing} 个镜像和官方 CDN 上都还没有，下次同步再试")
     if report.album_missing:
-        print(f"相册列出的剧本中有 {report.album_missing} 个镜像上没有，相册有变化时再试")
+        print(f"相册列出的剧本中有 {report.album_missing} 个镜像和官方 CDN 上都没有，相册有变化时再试")
     if report.unnamed_events:
         events = "、".join(f"{event:03d}" for event in report.unnamed_events)
         print(f"活动名对照表里还没有这些活动，暂用「活动剧情 NNN」：{events}")
@@ -411,8 +436,9 @@ async def _stand_fetch(args: argparse.Namespace) -> int:
 
     progress = logging.StreamHandler()  # the first fetch takes a quarter of an hour or so
     progress.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
-    logging.getLogger("eidolon.stand_fetch").addHandler(progress)
-    logging.getLogger("eidolon.stand_fetch").setLevel(logging.INFO)
+    for name in ("eidolon.stand_fetch", "eidolon.mirror"):
+        logging.getLogger(name).addHandler(progress)
+        logging.getLogger(name).setLevel(logging.INFO)
     mirror = Mirror()
     try:
         characters = load_characters(
@@ -495,6 +521,40 @@ async def _stand_upload(args: argparse.Namespace) -> int:
         f"上传 {report.uploaded} 个文件（{report.uploaded_bytes / 1_000_000:.1f} MB），"
         f"{report.unchanged} 个存储桶里已有、内容没变，没有上传；用时 {time.monotonic() - started:.0f} 秒"
     )
+    return 0
+
+
+async def _bar_upload(args: argparse.Namespace) -> int:
+    from eidolon.bar_upload import bar_audio_path, load_bar_audio, upload_bar_audio
+    from eidolon.s3 import Bucket, S3Error, S3Settings
+
+    try:
+        catalog = load_bar_audio(bar_audio_path(args.characters or characters_path_from_env()))
+        settings = S3Settings.from_env(purpose="上传酒吧的音频")
+    except RuntimeError as e:  # a broken list, settings missing
+        print(e, file=sys.stderr)
+        return 1
+    if not args.audio.is_dir():
+        print(f"找不到原版提取目录里的音频目录 {args.audio}", file=sys.stderr)
+        return 1
+    bucket = Bucket(settings)
+    try:
+        report = await upload_bar_audio(args.audio, catalog, bucket)
+    except S3Error as e:
+        print(f"上传中断，没有写 manifest（已上传的不会重复上传，重新运行即可继续）：{e}", file=sys.stderr)
+        return 2
+    finally:
+        await bucket.aclose()
+    print(
+        f"上传 {report.uploaded} 个文件（{report.uploaded_bytes / 1_000_000:.1f} MB），"
+        f"{report.unchanged} 个存储桶里已有、内容没变，没有上传；写好了 bar/manifest.json"
+    )
+    if report.missing:
+        print(
+            f"{len(report.missing)} 个文件在 {args.audio} 里找不到，没有上传：{'、'.join(report.missing)}",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 
@@ -582,14 +642,15 @@ async def _backup(args: argparse.Namespace) -> int:
     import time
 
     from eidolon.backup import EXPORT_FAILED, Backups, describe
+    from eidolon.data_access import Database
 
     started = time.monotonic()
     try:
-        backups = Backups(args.db or database_path_from_env(), utc_now)
+        db = Database(args.db or database_path_from_env())
         try:
-            report = await backups.run(args.source)
+            report = await Backups(db, utc_now).run(args.source)
         finally:
-            backups.close()
+            await db.close()
     except sqlite3.Error as e:  # not a missing setting, which exiting 1 would say
         print(f"没有备份：备份记录写不进数据库：{e}", file=sys.stderr)
         return EXPORT_FAILED
@@ -624,6 +685,7 @@ async def _draft_sheet(args: argparse.Namespace) -> int:
     from eidolon.characters import load_characters
     from eidolon.config import LLMSettings
     from eidolon.corpus import StoryCorpus
+    from eidolon.data_access import Database
     from eidolon.embedding import NoEmbedder
     from eidolon.llm import LLMError
     from eidolon.llm.providers import open_llm
@@ -672,16 +734,17 @@ async def _draft_sheet(args: argparse.Namespace) -> int:
     logging.getLogger("eidolon.sheet_draft").addHandler(progress)
     logging.getLogger("eidolon.sheet_draft").setLevel(logging.INFO)
     llm = open_llm(llm_settings)
-    corpus = StoryCorpus(args.db or database_path_from_env(), NoEmbedder())
+    db = Database(args.db or database_path_from_env())
     try:
         report = await draft_sheet(
-            character, corpus, llm, output=path, overwrite=args.force, budget=budget
+            character, StoryCorpus(db, NoEmbedder()), llm, output=path, overwrite=args.force,
+            budget=budget,
         )
     except (NoEpisodes, LLMError) as e:
         print(e, file=sys.stderr)
         return 1
     finally:
-        corpus.close()
+        await db.close()
         await llm.aclose()
     sampled = (
         f"（素材太多，均匀抽取了其中 {report.episodes_read} 段）"
@@ -741,6 +804,7 @@ async def _eval_rerank(args: argparse.Namespace) -> int:
 
     from eidolon.characters import load_characters
     from eidolon.config import EmbeddingSettings, RerankSettings
+    from eidolon.data_access import Database
     from eidolon.embedding import EmbeddingError, open_embedder
     from eidolon.rerank import RerankError, SiliconFlowReranker, thresholds_for
     from eidolon.rerank_eval import CalibrationError, evaluate, load_calibration, report
@@ -766,16 +830,15 @@ async def _eval_rerank(args: argparse.Namespace) -> int:
     logging.getLogger("eidolon.retrieval").addHandler(warnings)
     embedder = open_embedder(embedding)
     reranker = SiliconFlowReranker(rerank.api_key, rerank.model, rerank.base_url)
-    sources = open_reference_sources(
-        args.db or database_path_from_env(), embedder, characters.values(), world
-    )
+    db = Database(args.db or database_path_from_env())
     try:
+        sources = open_reference_sources(db, embedder, characters.values(), world)
         results = await evaluate(calibration, characters, reranker, sources)
     except (CalibrationError, EmbeddingError, RerankError) as e:
         print(e, file=sys.stderr)
         return 1
     finally:
-        sources.close()
+        await db.close()
         await embedder.aclose()
         await reranker.aclose()
     print(report(results, rerank.model, thresholds_for(rerank)))
@@ -923,12 +986,15 @@ async def _eval_memory(args: argparse.Namespace) -> int:
     return 0
 
 
-def _list_users(store: Store, _: argparse.Namespace) -> None:
-    for user in store.list_users():
+async def _list_users(db: Database, _: argparse.Namespace) -> None:
+    store = Store(db)
+    users = await store.list_users()
+    methods_of = await store.sign_in_methods_of([user.id for user in users])
+    for user in users:
         methods = "、".join(
             f"{PROVIDER_LABELS.get(m.provider, m.provider)} {m.display_name}"  # pyright: ignore[reportCallIssue, reportArgumentType]
             f" ({m.provider}:{m.subject})"
-            for m in store.sign_in_methods(user.id)
+            for m in methods_of[user.id]
         ) or "（没有登录方式）"
         state = f"已封禁于 {user.banned_at}" if user.banned_at else "正常"
         if user.ban_note:
@@ -936,24 +1002,20 @@ def _list_users(store: Store, _: argparse.Namespace) -> None:
         print(f"{user.id}\t{user.name}\t{methods}\t创建于 {user.created_at}\t{state}")
 
 
-def _ban_user(store: Store, args: argparse.Namespace) -> None:
-    store.set_banned(args.user_id, datetime.now(UTC), args.note or None)
+async def _ban_user(db: Database, args: argparse.Namespace) -> None:
+    await Store(db).set_banned(args.user_id, datetime.now(UTC), args.note or None)
     print(f"已封禁用户 {args.user_id}，并让他在所有设备上退出登录；正在进行的通话会在几秒内挂断")
 
 
-def _unban_user(store: Store, args: argparse.Namespace) -> None:
-    store.set_banned(args.user_id, None)
+async def _unban_user(db: Database, args: argparse.Namespace) -> None:
+    await Store(db).set_banned(args.user_id, None)
     print(f"已解封用户 {args.user_id}")
 
 
-def _user_usage(store: Store, args: argparse.Namespace) -> None:
-    store.get_user(args.user_id)  # NotFound for no such user
+async def _user_usage(db: Database, args: argparse.Namespace) -> None:
+    await Store(db).get_user(args.user_id)  # NotFound for no such user
     # The limits play no part in looking over what was used.
-    usage = UsageLimiter(args.db or database_path_from_env(), UsageLimits(), utc_now)
-    try:
-        day = usage.last_day(args.user_id)
-    finally:
-        usage.close()
+    day = await UsageLimiter(db, UsageLimits(), utc_now).last_day(args.user_id)
     print(f"用户 {args.user_id} 最近 24 小时的用量（UTC，按小时）：")
     print("时间\t文字回合\t通话\t其中不计入限额的回合\t其中不计入限额的通话")
     for hour, tally in day.hours.items():
@@ -972,6 +1034,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", metavar="命令")
     commands.add_parser("serve", help="启动服务（默认）")
+    doctor = commands.add_parser(
+        "doctor",
+        help="按 .env 逐项试一次各项服务（经代理和直连），说明哪里不对、该怎么改"
+        "（后端不用停，也不必在运行）",
+    )
+    doctor.add_argument("--json", action="store_true", help="结果输出成 JSON，给 Agent 读")
 
     user = commands.add_parser("user", help="管理用户").add_subparsers(
         dest="action", required=True, metavar="操作"
@@ -1112,6 +1180,22 @@ def _parser() -> argparse.ArgumentParser:
             "不要放进仓库",
         )
 
+    bar = commands.add_parser("bar", help="管理酒吧的音频").add_subparsers(
+        dest="action", required=True, metavar="操作"
+    )
+    bar_upload = bar.add_parser(
+        "upload",
+        help="按角色配置旁边的 bar_audio.json，把原版的曲目和音效从本机的原版提取目录上传到立绘的存储桶"
+        "（EIDOLON_STAND_S3_*）的 bar/ 下，内容没变的不重复上传，最后写 bar/manifest.json"
+        "（可重复执行；存储桶出错时退出码为 2，有找不到的文件时为 3）",
+    )
+    bar_upload.add_argument("audio", type=Path, help="本机原版提取目录里的 audio/，不要放进仓库")
+    bar_upload.add_argument(
+        "--characters",
+        type=Path,
+        help="角色配置文件（默认取环境变量 EIDOLON_CHARACTERS_PATH），曲目表和音效清单在它旁边",
+    )
+
     reading = commands.add_parser("reading", help="管理读音").add_subparsers(
         dest="action", required=True, metavar="操作"
     )
@@ -1186,7 +1270,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     judge.add_argument(
         "--only",
-        choices=["retrieval", "emotion", "affinity", "photo"],
+        choices=["retrieval", "emotion", "affinity", "photo", "considerate"],
         action="append",
         help="只跑这一类用例（可以写几次，默认全跑），例如 --only photo",
     )

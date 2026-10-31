@@ -3,6 +3,7 @@
 import NextLink from "next/link";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -39,6 +40,8 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { copy } from "@/i18n";
 import { cueText, changeNote, untilText } from "@/lib/affinity";
 import type { Character } from "@/lib/api";
+import { keepCalendarMode } from "@/lib/calendar";
+import { eventText } from "@/lib/conversationEvents";
 import type { Entry } from "@/lib/conversationLog";
 import type { Failure } from "@/lib/failure";
 import { giftsHref } from "@/lib/gifts";
@@ -47,13 +50,15 @@ import { linesOf, type Line } from "@/lib/messageLines";
 import { pastDay } from "@/lib/pastConversations";
 import { photosUsedUpText } from "@/lib/photoFailure";
 import { hearVoice, startRecording, voiceAvailability, type Recording, type VoiceAvailability } from "@/lib/voiceMessage";
-import { speechState, subscribeSpeech, toggleSpeech } from "@/lib/messageSpeech";
+import { saidOf, type ReadAloud, type Said } from "@/lib/readAloud";
+import { herScheduleHref } from "@/lib/schedule";
 import { cn } from "@/lib/utils";
 import { herVars } from "@/theme/herVars";
 import {
   AchievementsIcon,
   AttachImageIcon,
   BackIcon,
+  CalendarIcon,
   CloseIcon,
   CooldownIcon,
   EndedIcon,
@@ -66,23 +71,25 @@ import {
   PhoneIcon,
   PhotosUsedUpIcon,
   SendIcon,
-  SpeakIcon,
 } from "@/theme/icons";
 import { Ja } from "@/theme/Ja";
 
 import { AchievementsPanel } from "./AchievementsPanel";
 import { AffinityBadge, CueArrowIcon } from "./AffinityBadge";
 import { CallBar } from "./CallBar";
-import { EVENT_ICONS, eventText } from "./EventIcon";
+import { EVENT_ICONS } from "./EventIcon";
 import { LiveCallLayer } from "./CallLayer";
 import { OutfitPicker } from "./OutfitPicker";
 import { PastConversations } from "./PastConversations";
 import { PhotoBlock } from "./PhotoBlock";
+import { ReadAloudBar, ReadAloudMenu } from "./ReadAloud";
 import { useDirectory, useWide } from "./ConversationDirectory";
 import { useFocusBack } from "./useFocusBack";
 import { useHerAchievements } from "./useHerAchievements";
 import { usePastConversation, type Viewing } from "./usePastConversation";
 import { useProducerTimezone } from "./useProducerTimezone";
+import { readAloudFor, useCanReadAloud } from "./useReadAloud";
+import { useScheduleOn } from "./useScheduleOn";
 import { useStandOutfits } from "./useStandOutfits";
 
 const t = copy.conversation;
@@ -102,16 +109,20 @@ const noSubscription = () => () => {};
  * 好感度可用时，电话键和更多菜单之间是好感度标识（GLOSSARY.md「好感度」）；不可用时读到 null，不显示。
  * 她在冷却中（GLOSSARY.md「冷却」）时，输入栏换成一行说明和「送她一件礼物」、电话键禁用，到点自己恢复。
  * 她结束了这个对话（GLOSSARY.md「已结束的对话」）时，输入栏换成结束卡「她结束了对话」和「开个新对话」、电话键禁用，只能往上翻看；她还在冷却中时，结束卡写上解除时刻、加「送她一件礼物」。
- * 送礼的入口（冷却时的输入栏、标识的说明末尾、冷却版结束卡）都跳到礼物页，带上她（spec「打开好感度藏起的送礼入口」），
+ * 送礼的入口（冷却时的输入栏、标识的说明末尾、冷却版结束卡）都跳到玩法里的礼物子页，带上她（spec「打开好感度藏起的送礼入口」），
  * 礼物一律记进当前对话；好感度和礼物同一个开关，好感度读不到时这些入口都不在。
  *
- * 更多菜单依次是「新对话」「历史对话」「换衣装」「成就」。「成就」打开她的成就面板（`AchievementsPanel`），「好感度和礼物」关着时没有；
+ * 更多菜单依次是「新对话」「历史对话」「换衣装」「成就」「她的日程」。「成就」打开她的成就面板（`AchievementsPanel`），「好感度和礼物」关着时没有；
+ * 「她的日程」去日历子页只看她、切成周视图，日程关着时没有；
  * 她有没看过的解锁时，更多菜单键右上角和「成就」后面各一个点（`useHerAchievements`）。这一页上的回合解锁了她的阶段、
  * 通话层没盖着页首时，好感度标识左边跳出奖杯和「+n」，约 3 秒收起（快照的 `trophy`）。
  * 「历史对话」打开面板（`PastConversations`），点一段就看那段历史对话
  * （地址带 `?c=`，`usePastConversation`）：消息区照平时画、只读，页首名字下面写「{日期}的对话」，电话键禁用
  * （通话中也禁用，回通话走通话条），输入栏换成只读卡「回到当前对话」；窄屏页首的返回键、只读卡的按钮都回到当前对话。
  * 历史对话不碰 LiveConversation：通话和正在进行的回复照旧在当前对话里，回去就看得到。在历史对话里点「新对话」先回到当前对话再开。
+ *
+ * 她记下的每条话（当前对话和历史对话里都是）上有一个菜单「朗读」（GLOSSARY.md「朗读」，`ReadAloudMenu`），部署者或这位用户
+ * 有语音合成的 key 才有；通话中不能点，开始呼叫、离开这一页时正在放的停下。合成好的留在这个标签页里（`readAloudFor`）。
  */
 export function ConversationView({
   userId,
@@ -148,6 +159,7 @@ export function ConversationView({
   // 她现在对制作人的好感度；读不到（好感度关着、没配判断模型或请求失败）就不显示标识，也不出变化胶囊。
   const { affinity, affinityCue, cooling, ended, trophy } = snapshot;
   const achievements = useHerAchievements(character.id, userId, snapshot.herUnlockedAt);
+  const isScheduleOn = useScheduleOn();
   // 解除时刻按制作人的时区写成今天或明天。
   const timeZone = useProducerTimezone();
 
@@ -195,7 +207,7 @@ export function ConversationView({
   }, [snapshot.newPhoto, live]);
 
   const isOpen = conversation.status === "open";
-  // 送礼入口去的礼物页：只带她，礼物一律记进当前对话（历史对话里点的也一样）。
+  // 送礼入口去的礼物子页：只带她，礼物一律记进当前对话（历史对话里点的也一样）。
   const gifts = giftsHref(character.id);
   // 在历史对话里开新对话：先回到当前对话。
   const startNew = () => {
@@ -205,6 +217,22 @@ export function ConversationView({
   const inCall = isLive(call);
   // 要在这次点击里同步调用：她的声音趁这一下唤醒 AudioContext。
   const dial = () => void live?.startCall();
+
+  // 朗读她的话：通话一开始（这一页上拨的，或者别处拨的）、离开这一页时，正在放的停下。
+  const readAloud = useMemo(() => readAloudFor(userId), [userId]);
+  const canReadAloud = useCanReadAloud(userId, account);
+  useEffect(() => {
+    if (inCall) readAloud.stop();
+  }, [inCall, readAloud]);
+  useEffect(() => () => readAloud.stop(), [readAloud]);
+  const reading = (conversationId: string): Reading => ({
+    readAloud,
+    conversationId,
+    canRead: canReadAloud,
+    inCall,
+    timeZone,
+    subtree,
+  });
 
   // 通话层展开时盖住整栏：底下的页首和对话不能再被 Tab 或屏幕阅读器摸到。快照里的 layer
   // 已经管着「画哪一通、收没收起」；通话条只在通话中、通话层收着时出现。
@@ -324,6 +352,17 @@ export function ConversationView({
               {achievements.isUnseen && <UnseenDot className="ml-auto" />}
             </DropdownMenuItem>
           )}
+          {isScheduleOn && (
+            <DropdownMenuItem
+              onClick={() => {
+                keepCalendarMode(userId, "week");
+                go(herScheduleHref(character.id));
+              }}
+            >
+              <CalendarIcon aria-hidden />
+              {t.herSchedule}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </header>
@@ -417,7 +456,7 @@ export function ConversationView({
     }
   };
   const cooldownUntil = cooling ? affinity?.cooldown_until : null;
-  // 冷却中的解除时刻和去礼物页的「送她一件礼物」：冷却那一行和冷却版结束卡共用。
+  // 冷却中的解除时刻和去礼物子页的「送她一件礼物」：冷却那一行和冷却版结束卡共用。
   const until = cooldownUntil ? untilText(new Date(cooldownUntil), new Date(), timeZone) : null;
   const giveHer = (
     <Button variant="outline" size="lg" nativeButton={false} render={<NextLink href={gifts} onClick={guard(gifts)} />}>
@@ -441,7 +480,7 @@ export function ConversationView({
       </Button>
     </ComposerCard>
   ) : until ? (
-    // 冷却中：一行说明代替输入框，右边是去礼物页的「送她一件礼物」；草稿留着，到点换回输入框时还在。
+    // 冷却中：一行说明代替输入框，右边是去礼物子页的「送她一件礼物」；草稿留着，到点换回输入框时还在。
     <div inert={isCovered} className="flex min-h-14 shrink-0 items-center gap-3 border-t bg-background px-3 py-2">
       <div role="status" className="flex min-w-0 flex-1 items-center gap-2 text-body text-muted-foreground">
         <CooldownIcon aria-hidden className="size-4 shrink-0" />
@@ -567,6 +606,7 @@ export function ConversationView({
               character={character}
               affinityOn={affinity !== null}
               timeZone={timeZone}
+              reading={reading(viewing.id)}
             />
           ) : viewing.status === "failed" ? (
             <Empty className="h-full">
@@ -600,6 +640,7 @@ export function ConversationView({
             character={character}
             affinityOn={affinity !== null}
             timeZone={timeZone}
+            reading={conversation.status === "open" ? reading(conversation.id) : null}
           />
         )}
       </div>
@@ -619,6 +660,7 @@ export function ConversationView({
           }
         }}
         onDeleted={(id) => {
+          readAloud.forget(id);
           if (id === viewing?.id) backToCurrent();
         }}
       />
@@ -765,7 +807,7 @@ function HeaderTip({ label, children }: { label: string; children: ReactElement 
  * 消息区：官方 Message Scroller，打开时停在最底，新消息和她正在说的话跟着往下滚（制作人往上翻时不抢）。
  * 消息从顶部开始排；气泡之间 4px，换人时多 8px。好感度可用时，改变了好感度的回复和送礼记录后面是一行变化胶囊。
  * 这一小时的照片用完时，她推掉的那条回复后面是一行同样的胶囊，几点以后可以再要按制作人的时区（`timeZone`）写。
- * 对话事件占一整行分隔线。
+ * 对话事件占一整行分隔线。她的话能朗读时（`reading`），气泡上有菜单，点过「朗读」的下面是语音条。
  */
 function Messages({
   entries,
@@ -773,14 +815,18 @@ function Messages({
   character,
   affinityOn,
   timeZone,
+  reading,
 }: {
   entries: Entry[];
   hearing: string;
   character: Character;
   affinityOn: boolean;
   timeZone: string;
+  reading: Reading | null;
 }) {
   const lines = linesOf(entries, new Date(), affinityOn);
+  // 键盘停在她最后一条能朗读的话上（`ReadAloudMenu`）。
+  const tabStop = reading?.canRead ? entries.findLast((e) => herLineIn(reading, e))?.key : undefined;
   return (
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <MessageScroller>
@@ -819,7 +865,13 @@ function Messages({
                 </MessageScrollerItem>
               ) : (
                 <MessageScrollerItem key={line.entry.key} messageId={line.entry.key} className={cn(line.first && "mt-2")}>
-                  <Bubbled line={line} entry={line.entry} character={character} />
+                  <Bubbled
+                    line={line}
+                    entry={line.entry}
+                    character={character}
+                    reading={reading}
+                    isTabStop={line.entry.key === tabStop}
+                  />
                 </MessageScrollerItem>
               ),
             )}
@@ -847,52 +899,54 @@ function EventLine({ entry, name }: { entry: Extract<Entry, { kind: "event" }>; 
   const Icon = EVENT_ICONS[entry.event];
   return (
     <div role="note" className="flex items-center gap-3 px-2 text-sm text-muted-foreground">
-      <span aria-hidden className="h-px flex-1 bg-foreground/15" />
-      <span className="flex shrink-0 items-center gap-1.5">
-        <Icon aria-hidden className="size-4" />
-        {eventText(entry.event, name, entry.gift)}
-        <time className="text-meta tabular-nums">{clock(entry.at)}</time>
+      <span aria-hidden className="h-px min-w-4 flex-1 bg-foreground/15" />
+      {/* 窄屏放不下一行时句子折行，先在空格处折（不拆「10月21日」），图标和时间不缩 */}
+      <span className="flex min-w-0 items-center gap-1.5">
+        <Icon aria-hidden className="size-4 shrink-0" />
+        <span className="min-w-0 break-keep text-balance wrap-anywhere">{eventText(entry, name)}</span>
+        <time className="shrink-0 text-meta tabular-nums">{clock(entry.at)}</time>
       </span>
-      <span aria-hidden className="h-px flex-1 bg-foreground/15" />
+      <span aria-hidden className="h-px min-w-4 flex-1 bg-foreground/15" />
     </div>
   );
 }
 
+/** 朗读她的话要用的（GLOSSARY.md「朗读」）：在哪个对话里、能不能点「朗读」、是不是在通话中，次数用完时按哪个时区写时刻，
+ * 菜单渲染到的子树。 */
+type Reading = {
+  readAloud: ReadAloud;
+  conversationId: string;
+  canRead: boolean;
+  inCall: boolean;
+  timeZone: string;
+  subtree: RefObject<HTMLDivElement | null>;
+};
+
+/** 这一条是她记下的哪条话（能朗读的）；不是她的话、或者她还在回复中没有记下的，是 null。 */
+function herLineIn(reading: Reading, entry: Entry): Said | null {
+  return entry.kind === "character" && !entry.pending ? saidOf(reading.conversationId, entry.key) : null;
+}
+
 /**
  * 一条消息。制作人的在右，深蓝墨水；她的在左，日语原文在上、中文字幕在下（The Original-Then-Subtitle Rule）。
- * 头像和名字只在一组的第一条，时间只在最后一条的外侧底部。
+ * 头像和名字只在一组的第一条，时间只在最后一条的外侧底部。她记下的话能朗读时气泡上有菜单，语音条在气泡下面。
  */
 function Bubbled({
   line: { first, last },
   entry,
   character,
+  reading,
+  isTabStop,
 }: {
   line: Extract<Line, { kind: "entry" }>;
   entry: Exclude<Entry, { kind: "event" }>;
   character: Character;
+  reading: Reading | null;
+  /** 消息区里键盘停在这一条（她最后一条能朗读的话）。 */
+  isTabStop: boolean;
 }) {
   const time = <time className="shrink-0 pb-0.5 text-meta text-muted-foreground tabular-nums">{clock(entry.at)}</time>;
-  const speech = useSyncExternalStore(subscribeSpeech, speechState, speechState);
-  /** 回复的消息编号；搭话有独立的编号空间，不能当作 messages 表里的消息。 */
-  const speechId = /^m\d+$/.test(entry.key) ? Number(entry.key.slice(1)) : null;
-  const speaker =
-    speechId === null ? null : (
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-lg"
-        onClick={() => toggleSpeech(speechId)}
-        aria-label={speech?.messageId === speechId ? t.speaking : t.speak}
-        aria-pressed={speech?.messageId === speechId}
-        className="shrink-0"
-      >
-        {speech?.messageId === speechId && speech.phase === "loading" ? (
-          <Spinner className="size-4" />
-        ) : (
-          <SpeakIcon className="size-4" />
-        )}
-      </Button>
-    );
+  const said = reading && herLineIn(reading, entry);
   if (entry.kind === "user") {
     return (
       <Message align="end">
@@ -925,29 +979,59 @@ function Bubbled({
         {first && <MessageHeader className="px-1">{character.name}</MessageHeader>}
         {entry.photo && <PhotoBlock photo={entry.photo} />}
         <div className="flex min-w-0 items-end gap-1.5">
-          <Bubble variant="her" joinsPrevious={!first} joinsNext={!last}>
-            <BubbleContent>
-              {entry.segments.length === 0 ? (
-                <Spinner className="my-1 text-muted-foreground" aria-label={t.replying(character.name)} />
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {entry.segments.map((segment, i) => (
-                    <div key={i} className="flex flex-col gap-0.5">
-                      <p className="text-japanese-line">
-                        <Ja>{segment.ja}</Ja>
-                      </p>
-                      {segment.zh && <p className="text-subtitle text-muted-foreground">{segment.zh}</p>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </BubbleContent>
-          </Bubble>
-          {last && !entry.pending && speaker}
+          <HerBubble said={said} reading={reading} isTabStop={isTabStop}>
+            <Bubble variant="her" joinsPrevious={!first} joinsNext={!last}>
+              <BubbleContent>
+                {entry.segments.length === 0 ? (
+                  <Spinner className="my-1 text-muted-foreground" aria-label={t.replying(character.name)} />
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {entry.segments.map((segment, i) => (
+                      <div key={i} className="flex flex-col gap-0.5">
+                        <p className="text-japanese-line">
+                          <Ja>{segment.ja}</Ja>
+                        </p>
+                        {segment.zh && <p className="text-subtitle text-muted-foreground">{segment.zh}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </BubbleContent>
+            </Bubble>
+          </HerBubble>
           {last && !entry.pending && time}
         </div>
+        {said && reading && (
+          <ReadAloudBar readAloud={reading.readAloud} said={said} inCall={reading.inCall} timeZone={reading.timeZone} />
+        )}
       </MessageContent>
     </Message>
+  );
+}
+
+/** 她的气泡：她记下的话能朗读时套上「朗读」的菜单，否则原样。 */
+function HerBubble({
+  said,
+  reading,
+  isTabStop,
+  children,
+}: {
+  said: Said | null;
+  reading: Reading | null;
+  isTabStop: boolean;
+  children: ReactElement;
+}) {
+  if (!said || !reading?.canRead) return children;
+  return (
+    <ReadAloudMenu
+      readAloud={reading.readAloud}
+      said={said}
+      inCall={reading.inCall}
+      isTabStop={isTabStop}
+      subtree={reading.subtree}
+    >
+      {children}
+    </ReadAloudMenu>
   );
 }
 

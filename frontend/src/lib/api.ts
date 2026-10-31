@@ -2,6 +2,8 @@ import type { AffinityChange, AffinityStatus } from "@/lib/affinity";
 import type { Provider } from "@/lib/signIn";
 import {
   forgetOwnKeys,
+  readAloudModel,
+  readAloudOwnKeys,
   turnOwnKeys,
   type BailianRegion,
   type FishAudioModel,
@@ -14,9 +16,12 @@ import {
 } from "@/lib/localOwnKeys";
 import type { LLMOffer, LLMProvider } from "@/lib/llmProviders";
 import type { EffortHint } from "@/lib/reasoningEffort";
+import type { ServedBody } from "@/lib/barMixer";
+import type { VisitEvent } from "@/lib/barVisit";
 import type { Rewarded } from "@/lib/rewards";
 import { detectTimezone } from "@/lib/timezone";
 import type { Speaking } from "@/lib/call";
+import type { Said } from "@/lib/readAloud";
 import type { Emotion, Nod } from "@/lib/standAnimations";
 import type { Stats, StatsRange } from "@/lib/stats";
 
@@ -29,12 +34,17 @@ export type Character = {
   scsp_avatar_url: string | null;
   /** Her image colour, `#rrggbb`; the interface only uses what `herVars()` derives from it. */
   color: string;
+  /** Her birthday in the original, `MM-DD`; February 29 falls on February 28 in a year without it. */
+  birthday: string;
   background_url: string | null;
   /** Her Spine stand on the call layer; null (her call background alone) unless the deployment
    * configures her idol, her default outfit and where the stands are served from. */
   stand: Stand | null;
   /** Her idol number in the original; the list comes in their order, those without one last. */
   idol_id: number | null;
+  /** What the original calls her, the end of her name (真乃), for where there is room for little: the
+   * calendar's job blocks; null when not configured, and her name is shown there. */
+  short_name: string | null;
   /** Her name in simplified Chinese as the community writes it (八宫巡); null when not configured. */
   name_zh: string | null;
   /** Her full name in hiragana, family and given name a space apart (さくらぎ まの); null when not configured. */
@@ -105,7 +115,7 @@ export type Conversation = {
  * other than her ending it; null while it has none. */
 export type LastMessage =
   | (Pick<Message, "role" | "text" | "ja" | "zh" | "created_at"> & { photo?: true; reach_out?: true })
-  | Pick<ConversationEvent, "type" | "kind" | "created_at" | "gift_name">
+  | Pick<ConversationEvent, "type" | "kind" | "created_at" | "gift_name" | "first_day" | "days_ago">
   | null;
 
 /** A character's newest conversation with the user, the last thing in it, and whether it has a
@@ -161,8 +171,9 @@ export async function getPhoto(id: string): Promise<PhotoStatus> {
 }
 
 /** The kinds of conversation event (GLOSSARY.md「对话事件」): she hung up on the user; the user
- * gave her a gift; she ended the conversation, which can then only be read (GLOSSARY.md「已结束的对话」). */
-export type EventKind = "hung_up" | "gift" | "ended";
+ * gave her a gift; she ended the conversation, which can then only be read (GLOSSARY.md「已结束的对话」);
+ * she seems unwell, for the user alone. */
+export type EventKind = "hung_up" | "gift" | "ended" | "unwell";
 
 /** Something that happened in a conversation that is not a turn, recorded among its messages. */
 export type ConversationEvent = {
@@ -174,6 +185,10 @@ export type ConversationEvent = {
   /** A gift record's gift, and its name; other events have none. */
   gift_id?: string;
   gift_name?: string;
+  /** Her being unwell's: the first day of her period (ISO date), and how many days before the day
+   * it was recorded on; other events have none. */
+  first_day?: string;
+  days_ago?: number;
 };
 
 /** What she said first in a conversation, the user not talking to her (GLOSSARY.md「搭话」): neither a
@@ -194,7 +209,8 @@ export type Recorded = Message | ConversationEvent | ReachOut;
  * `delta`s, then `photos-used-up` if the user asked for a photo with this hour's used up (when they
  * may ask again, ISO), and `done`, or `error`. `done` says too where the turn left her affinity, null
  * while affinity is off, her ending the conversation after it, recorded after her reply, if she
- * did, and what the turn was rewarded with (lib/rewards), null if nothing. */
+ * did, what the turn was rewarded with (lib/rewards), null if nothing, and her being unwell,
+ * recorded before the user's words, if it was. */
 export type TurnEvent =
   | { type: "user"; text: string }
   | { type: "photo"; id: string; status: "pending" }
@@ -206,6 +222,7 @@ export type TurnEvent =
       affinity: AffinityStatus | null;
       ended?: ConversationEvent | null;
       rewarded?: Rewarded | null;
+      unwell?: ConversationEvent | null;
     }
   | { type: "error"; message: string };
 
@@ -298,9 +315,12 @@ export class ApiError extends Error {
   /** Refused because she is in a cooldown with the user (GLOSSARY.md「冷却」) until this time
    * (ISO); null for any other refusal. */
   readonly cooldownUntil: string | null;
-  /** Refused because affinity and gifts are not open (GLOSSARY.md「礼物」): the gifts page shows
+  /** Refused because affinity and gifts are not open (GLOSSARY.md「礼物」): the play page shows
    * them closed. */
   readonly giftsClosed: boolean;
+  /** Refused because schedules are off (GLOSSARY.md「日程」): the calendar shows the month
+   * alone. */
+  readonly scheduleClosed: boolean;
   /** What the refusal was, where the backend says so beside its reason (a data package's
    * `broken`, `too_new`, `used_up`…); null where it does not. */
   readonly code: string | null;
@@ -314,13 +334,21 @@ export class ApiError extends Error {
     {
       cooldownUntil = null,
       giftsClosed = false,
+      scheduleClosed = false,
       code = null,
       retryAt = null,
-    }: { cooldownUntil?: string | null; giftsClosed?: boolean; code?: string | null; retryAt?: string | null } = {},
+    }: {
+      cooldownUntil?: string | null;
+      giftsClosed?: boolean;
+      scheduleClosed?: boolean;
+      code?: string | null;
+      retryAt?: string | null;
+    } = {},
   ) {
     super(message);
     this.cooldownUntil = cooldownUntil;
     this.giftsClosed = giftsClosed;
+    this.scheduleClosed = scheduleClosed;
     this.code = code;
     this.retryAt = retryAt;
   }
@@ -364,9 +392,10 @@ export async function json<T>(res: Response): Promise<T> {
     // Refused while she is in a cooldown, told apart from the limit's 429.
     const cooldownUntil = res.status === CONFLICT && typeof body?.cooldown_until === "string" ? body.cooldown_until : null;
     const giftsClosed = res.status === CONFLICT && body?.gifts_closed === true;
+    const scheduleClosed = res.status === CONFLICT && body?.schedule_closed === true;
     const code = typeof body?.code === "string" ? body.code : null;
     const retryAt = res.status === OVER_LIMIT && typeof body?.retry_at === "string" ? body.retry_at : null;
-    throw new ApiError(message, res.status, { cooldownUntil, giftsClosed, code, retryAt });
+    throw new ApiError(message, res.status, { cooldownUntil, giftsClosed, scheduleClosed, code, retryAt });
   }
   return res.json();
 }
@@ -438,6 +467,8 @@ export type SignInMethod = { provider: Provider; display_name: string; email: st
  * towards no limit (GLOSSARY.md「免限额密钥」), in the order of `OWN_SERVICES`; at least one.
  * `reach_outs`: the user's own switch for reach-outs (GLOSSARY.md「搭话」); null where the deployer
  * has them off.
+ * `cycles`: the user's own switch for cycles (GLOSSARY.md「周期」); null where the deployer has them
+ * off.
  * `sponsor_version`: the version of the deployer's sponsor code (GLOSSARY.md「赞赏」), when it was
  * uploaded, for `sponsorImageUrl`; null when users are not shown it (switched off, or no code). */
 export type Account = {
@@ -447,13 +478,24 @@ export type Account = {
   is_admin: boolean;
   exempting_keys: OwnService[];
   reach_outs: boolean | null;
+  cycles: boolean | null;
   sponsor_version: string | null;
+  /** Whether the deployer has a key for speech synthesis now: her words are read aloud on it for those
+   * who keep none of their own in this browser (GLOSSARY.md「朗读」). */
+  deployer_tts: boolean;
 };
 
 /** Where the deployer's sponsor code of `version` (`Account.sponsor_version`) is read: a new address for
  * each code uploaded, so a browser keeps each for good. */
 export function sponsorImageUrl(version: string): string {
   return `/api/sponsor/image?${new URLSearchParams({ v: version })}`;
+}
+
+/** Whether this browser is signed in, as one who has yet to agree to the terms too; unlike `api`, it
+ * sends the browser nowhere when it is not. */
+export async function isSignedInHere(): Promise<boolean> {
+  const res = await fetch("/api/account", { headers: apiHeaders() });
+  return res.ok || res.status === CONSENT_REQUIRED;
 }
 
 /** The signed-in user; sends the browser to sign in, or to agree to the terms, first. */
@@ -466,6 +508,18 @@ export async function getAccount(): Promise<Account> {
 export async function switchReachOuts(on: boolean): Promise<void> {
   await expectNoContent(
     await api("/api/account/reach-outs", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ on }),
+    }),
+  );
+}
+
+/** Turn the user's own switch for cycles on or off, for all the characters; refused where the deployer
+ * has them off. */
+export async function switchCycles(on: boolean): Promise<void> {
+  await expectNoContent(
+    await api("/api/account/cycles", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ on }),
@@ -622,6 +676,90 @@ export async function logout(userId?: string): Promise<void> {
   if (userId) forgetOwnKeys(userId);
 }
 
+/** A drink's flavor and kind (GLOSSARY.md「饮品」), as the recipe book's categories. */
+export type DrinkFlavor = "sweet" | "bitter" | "sour" | "spicy" | "bubbly";
+export type DrinkKind = "girly" | "manly" | "classic" | "classy" | "promo";
+
+type DrinkNames = { id: string; name: string; short_name: string; flavor: DrinkFlavor; kind: DrinkKind };
+
+/** A drink of the catalog (GLOSSARY.md「饮品」「材料」), as the bar counter and the recipe book read it:
+ * mixed of parts of each ingredient (Karmotrine `"optional"` when any number will do), on ice or not,
+ * aged or not, mixed or blended, big of itself or not, with its recipe card's `page` (null for the
+ * few without a card); or bottled, with
+ * its line of description and its parts of Karmotrine. No Japanese name, no character's tastes. */
+export type Drink =
+  | (DrinkNames & {
+      method: "mix" | "blend";
+      adelhyde: number;
+      bronson_extract: number;
+      powdered_delta: number;
+      flanergide: number;
+      karmotrine: number | "optional";
+      ice: boolean;
+      aged: boolean;
+      big: boolean;
+      page: number | null;
+    })
+  | (DrinkNames & { method: "bottle"; description: string; karmotrine: number });
+
+/** `GET /api/bar`: closed, or open with the drinks in catalog order and whether a visit done today
+ * would be rewarded (none done yet today, Beijing time, and affinity and gifts open). */
+export type BarState = { enabled: false } | { enabled: true; drinks: Drink[]; reward_today: boolean };
+
+export async function getBar(): Promise<BarState> {
+  return json(await api("/api/bar"));
+}
+
+/** Comes into the bar, bringing the user's own LLM (as `own_keys`) as a text turn does. Once the
+ * server took it, the visit's first call, to be followed as it comes: `visit` first, then her lines
+ * up to her order. Refused while the bar is closed (409), or over the limit (429, `retryAt` saying
+ * when). Aborting `signal` closes the call, and the server leaves the visit. */
+export async function enterBar(userId: string, signal?: AbortSignal): Promise<AsyncGenerator<VisitEvent>> {
+  const res = await api("/api/bar/visits", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ own_keys: turnOwnKeys(userId) }),
+    signal,
+  });
+  if (!res.ok) await json(res);
+  return serverSentEvents<VisitEvent>(res);
+}
+
+/** Serves her what the bar counter holds (lib/barMixer `served`). Once the server took it, the
+ * call it set off, to be followed as it comes: the producer's 「请慢用」, her reaction, and her next
+ * order or her goodbye. Refused if it is none of the drinks (422 `broken_drink`), while she is not
+ * waiting for one (409, a double tap), or with the visit gone (410 `visit_gone`). */
+export async function serveBarDrink(
+  visitId: string,
+  served: ServedBody,
+  signal?: AbortSignal,
+): Promise<AsyncGenerator<VisitEvent>> {
+  const res = await api(`/api/bar/visits/${encodeURIComponent(visitId)}/serves`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(served),
+    signal,
+  });
+  if (!res.ok) await json(res);
+  return serverSentEvents<VisitEvent>(res);
+}
+
+/** Tries again the call the visit stopped before, failing (a `failed` event). Once the server took
+ * it, the call to be followed as it comes, from its first line on, without the producer's 「请慢用」
+ * of a drink served. Refused while no call failed (409 `not_failed`), or with the visit gone (410
+ * `visit_gone`, as after her farewell failed to be written down). */
+export async function retryBarVisit(visitId: string, signal?: AbortSignal): Promise<AsyncGenerator<VisitEvent>> {
+  const res = await api(`/api/bar/visits/${encodeURIComponent(visitId)}/retry`, { method: "POST", signal });
+  if (!res.ok) await json(res);
+  return serverSentEvents<VisitEvent>(res);
+}
+
+/** Leaves the visit: over, not to be come back to. `keepalive` as the page goes away. */
+export async function leaveBarVisit(visitId: string, { keepalive = false } = {}): Promise<void> {
+  const path = `/api/bar/visits/${encodeURIComponent(visitId)}`;
+  await expectNoContent(await api(path, { method: "DELETE", keepalive }));
+}
+
 /** The user's stats (GLOSSARY.md「统计」), in the producer's time zone, the lower part over
  * `range` (all of it unless given). */
 export async function getStats(range: StatsRange = "all"): Promise<Stats> {
@@ -637,6 +775,10 @@ export type DataPackageImported = {
   profile: boolean;
   /** Her conversations not imported: she is not on this deployment. */
   skipped: { character_name: string; conversations: number }[];
+  /** The periods written down that were imported (GLOSSARY.md「周期」). */
+  cycles: number;
+  /** Those not: of a character not here, out of bounds, after today, or overlapping another. */
+  cycles_skipped: number;
 };
 
 /** Import a data package, the file itself as the body, streamed: the categories `include` names
@@ -755,7 +897,9 @@ export async function getCallSetup(conversationId: string, own: readonly OwnServ
 
 /**
  * Sends one text turn, bringing the user's own LLM (as `own_keys`) if this browser keeps one for
- * them, and yields the reply's server-sent events as they arrive.
+ * them, and the model of their own key for speech synthesis, without the key, for her to write her
+ * delivery cues as it reads them (`read_aloud_model`, GLOSSARY.md「朗读」); and yields the reply's
+ * server-sent events as they arrive.
  */
 export async function* sendTurn(
   conversationId: string,
@@ -766,8 +910,34 @@ export async function* sendTurn(
   const res = await api(`/api/conversations/${conversationId}/turns`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text, image: image ?? undefined, own_keys: turnOwnKeys(userId) }),
+    body: JSON.stringify({
+      text,
+      image: image ?? undefined,
+      own_keys: turnOwnKeys(userId),
+      read_aloud_model: readAloudModel(userId),
+    }),
   });
+  yield* serverSentEvents<TurnEvent>(res);
+}
+
+/**
+ * Her line read aloud (GLOSSARY.md「朗读」), as mp3, on the user's own key for speech synthesis if this
+ * browser keeps one for them (as `own_keys`), else on the deployer's. Throws as `json` does when it is
+ * not: a failure on the user's own key has the code `own_key`.
+ */
+export async function readAloud(said: Said, userId: string): Promise<ArrayBuffer> {
+  const line = said.kind === "reply" ? `messages/${said.id}` : `reach-outs/${said.id}`;
+  const res = await api(`/api/conversations/${said.conversationId}/${line}/read-aloud`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ own_keys: readAloudOwnKeys(userId) }),
+  });
+  if (!res.ok) await json(res);
+  return res.arrayBuffer();
+}
+
+/** The server-sent events of a response, each as it arrives; a refusal thrown as `json` throws it. */
+async function* serverSentEvents<T>(res: Response): AsyncGenerator<T> {
   if (!res.ok || !res.body) {
     await json(res);
     return;
@@ -787,7 +957,7 @@ export async function* sendTurn(
         .filter((line) => line.startsWith("data: "))
         .map((line) => line.slice(6))
         .join("\n");
-      if (data) yield JSON.parse(data) as TurnEvent;
+      if (data) yield JSON.parse(data) as T;
     }
   }
 }

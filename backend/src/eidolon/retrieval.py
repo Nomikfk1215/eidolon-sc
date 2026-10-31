@@ -50,14 +50,13 @@ import asyncio
 import logging
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from eidolon.affinity import Judged
-from eidolon.affinity_judge import questions_for
-from eidolon.affinity_judge import read_judged
+from eidolon.affinity import Days, Judged
+from eidolon.affinity_judge import questions_for, read_judged
 from eidolon.characters import Character
 from eidolon.corpus import CatalogSource, Episode, StoryCorpus
+from eidolon.data_access import Database
 from eidolon.embedding import Embedder, EmbeddingError, Reembeddable
 from eidolon.facts import CharacterFacts
 from eidolon.judge import (
@@ -139,11 +138,13 @@ class RetrievalJudge(Protocol):
         text: str,
         affinity: bool = False,
         photo: bool = False,
+        days: Days | None = None,
         tier: str | None = None,
     ) -> tuple[Need, Judged | None, bool]:
         """What answering `text` needs looked up; asked about `affinity` too, what saying it
-        does to her affinity (None if that alone cannot be told); and asked about `photo`,
-        whether it asks her for a photo (no if that alone cannot be told)."""
+        does to her affinity (None if that alone cannot be told), the considerate question
+        asked too in her `days`, and that in this relationship's `tier`; and asked about
+        `photo`, whether it asks her for a photo (no if that alone cannot be told)."""
         ...
 
 
@@ -163,26 +164,21 @@ class StoryReferences:
     async def search(
         self, query_vector: Sequence[float], character: Character, limit: int
     ) -> list[Reference]:
-        passages = await asyncio.to_thread(
-            self.corpus.search_by_vector, query_vector, character.id, limit
-        )
-        return [Reference(self.kind, p.text, p.episode.id, p.score) for p in passages]
+        passages = await self.corpus.search_by_vector(query_vector, character.id, limit)
+        return [Reference(self.kind, p.text, p.episode_id, p.score) for p in passages]
 
     async def embed_missing(self, batch: int, progress: Callable[[int], None]) -> int:
         return await self.corpus.embed_missing(batch, progress)
 
-    def forget_other_models(self) -> int:
+    async def forget_other_models(self) -> int:
         """Nothing: each passage keeps only one vector, which embedding it again replaces."""
         return 0
-
-    def close(self) -> None:
-        self.corpus.close()
 
 
 class ReferenceSources:
     """The reference sources a turn looks references up in, all searched with the same
     query vector and reranked together; and the story corpus and the work facts, which
-    recalling searches itself. Closed all at once."""
+    recalling searches itself."""
 
     def __init__(
         self,
@@ -192,8 +188,8 @@ class ReferenceSources:
         work: WorkFacts | None,
         unsearched: Sequence[ReferenceSource] = (),
     ) -> None:
-        """`sources` are closed with the whole, `corpus` and `work` among them; so are
-        `unsearched`, sources with nothing to search, kept only to be embedded again."""
+        """`corpus` and `work` are among `sources`; `unsearched` are sources with nothing
+        to search, kept only to be embedded again."""
         self.embedder = embedder
         self.corpus = corpus
         self.work = work
@@ -235,6 +231,12 @@ class ReferenceSources:
         query_vector = await self.embedder.embed_query(text)
         return await self.rerank(reranker, text, await self.candidates(query_vector, character))
 
+    @property
+    def facts(self) -> CharacterFacts | None:
+        """The characters' facts among the sources, if they are, for the bar to look in
+        (`bar_facts`) without keeping their vectors twice."""
+        return next((s for s in self._sources if isinstance(s, CharacterFacts)), None)
+
     def embedded(self) -> list[Reembeddable]:
         """Every source, for `eidolon reembed`, the unsearched among them."""
         return [*self._sources, *self._unsearched]
@@ -251,26 +253,22 @@ class ReferenceSources:
             lines += ["", f"## {headings[reference.kind]}", reference.text]
         return "\n".join(lines)
 
-    def close(self) -> None:
-        for source in [*self._sources, *self._unsearched]:
-            source.close()
-
 
 def open_reference_sources(
-    path: Path,
+    db: Database,
     embedder: Embedder,
     characters: Iterable[Character],
     world: World | None,
     *,
     warn: bool = True,
 ) -> ReferenceSources:
-    """The reference sources in the database at `path`: the story, the characters' facts
+    """The reference sources in the database `db` reads and writes: the story, the characters' facts
     and, given a world setting, the work facts; without one, the work facts are there only
     to be embedded again, which forgets whatever vectors they had. Warns (unless not to
     `warn`) if story passages have no vector from `embedder`'s model, as they cannot be
     found."""
-    corpus = StoryCorpus(path, embedder)
-    if warn and (missing := corpus.count_missing_vectors()):
+    corpus = StoryCorpus(db, embedder)
+    if warn and (missing := corpus.missing_vectors_at_open):
         log.warning(
             "%d story passages have no vectors from the embedding model %s and cannot be"
             " found: run `eidolon reembed` after changing the embedding service, model"
@@ -278,9 +276,9 @@ def open_reference_sources(
             missing, embedder.model,
         )
     sources: list[ReferenceSource] = [
-        StoryReferences(corpus), CharacterFacts(path, embedder, characters)
+        StoryReferences(corpus), CharacterFacts(db, embedder, characters)
     ]
-    work = WorkFacts(path, embedder, world)
+    work = WorkFacts(db, embedder, world)
     if world is None:
         return ReferenceSources(embedder, sources, corpus, None, [work])
     sources.append(work)
@@ -342,11 +340,12 @@ class Retrieval:
         memory: MemoryTurn | None = None,
         affinity: bool = False,
         photo: bool = False,
+        days: Days | None = None,
         tier: str | None = None,
     ) -> Retrieved:
         """Look up what this turn needs, finding the user's memories through `memory`; and
-        judge what it does to her affinity, and whether it asks her for a photo, if asked
-        to."""
+        judge what it does to her affinity, in her `days` if she is in them and in this
+        relationship's `tier`, and whether it asks her for a photo, if asked to."""
         query = memory_query(history, text)
         embedding = asyncio.ensure_future(self._embed(query))
         finding = asyncio.ensure_future(self._find(character, embedding, memory))
@@ -355,7 +354,7 @@ class Retrieval:
             judged, asked = None, False
             try:
                 need, judged, asked = await self._judge.judge(
-                    character, history, text, affinity, photo, tier=tier
+                    character, history, text, affinity, photo, days, tier=tier
                 )
             except JudgeError:
                 log.warning("retrieval judge failed; retrieving anyway", exc_info=True)
@@ -497,10 +496,10 @@ class Retrieval:
         else:
             episode_ids, found = self._relevant(best, story, entries)
         corpus = self._sources.corpus
-        episodes = await asyncio.to_thread(_episodes, corpus, episode_ids) if episode_ids else []
+        episodes = await corpus.episodes(episode_ids) if episode_ids else []
         if not episodes and not found:
             return f"没有想起和「{asked}」有关的剧情：{_NOT_IN_STORY}，或者问问制作人。"
-        catalog = await asyncio.to_thread(corpus.catalog, character.id) if episodes else []
+        catalog = await corpus.catalog(character.id) if episodes else []
         return recall_prompt(asked, episodes, catalog, found)
 
     def _relevant(
@@ -523,9 +522,6 @@ class Retrieval:
             elif len(found) < RECALL_ENTRIES:
                 found.append(entries[i - len(story)])
         return episode_ids, found
-
-    def close(self) -> None:
-        self._sources.close()
 
 
 def _query_vector(embedding: "asyncio.Future[list[float] | None]") -> list[float] | None:
@@ -551,11 +547,6 @@ async def _find_memories(
     memory: MemoryTurn | None, query: str, candidates: Sequence[Memory]
 ) -> str | None:
     return await memory.find(query, candidates) if memory else None
-
-
-def _episodes(corpus: StoryCorpus, ids: Iterable[str]) -> list[Episode]:
-    """The episodes of `ids` still in `corpus`."""
-    return [e for id in ids if (e := corpus.get(id)) is not None]
 
 
 async def _search_work(work: WorkFacts | None, query_vector: Sequence[float]) -> list[WorldEntry]:
@@ -647,14 +638,16 @@ _QUESTIONS = {
 
 
 def judge_questions(
-    affinity: bool = False, photo: bool = False, tier: str | None = None
+    affinity: bool = False, photo: bool = False, days: Days | None = None,
+    tier: str | None = None,
 ) -> dict[str, dict]:
     """What the judge model is asked of a turn: retrieval's three questions, affinity's in
-    the same request if `affinity`, and whether it asks for a photo if `photo`. `tier` is
-    how close they are, which relaxes affinity's questions above trust."""
+    the same request if `affinity`, the considerate question with them in her `days`, and
+    `tier` how close they are, which relaxes affinity's questions above trust; and whether
+    it asks for a photo if `photo`."""
     return (
         _QUESTIONS
-        | (questions_for(tier) if affinity else {})
+        | (questions_for(tier, days) if affinity else {})
         | (PHOTO_QUESTIONS if photo else {})
     )
 
@@ -689,18 +682,19 @@ class ModelRetrievalJudge:
         text: str,
         affinity: bool = False,
         photo: bool = False,
+        days: Days | None = None,
         tier: str | None = None,
     ) -> tuple[Need, Judged | None, bool]:
         """As `RetrievalJudge.judge`, affinity's questions and the photo's asked in the same
         request."""
         answers = await self._judge_model.ask(
-            turn_state(character, history, text), judge_questions(affinity, photo, tier)
+            turn_state(character, history, text), judge_questions(affinity, photo, days, tier)
         )
         need = self.decide(_answer(answers))
         judged = None
         if affinity:
             try:
-                judged = read_judged(answers, self.thresholds)
+                judged = read_judged(answers, self.thresholds, days)
             except JudgeError:
                 log.warning("affinity judge's answers could not be read", exc_info=True)
         asked = False

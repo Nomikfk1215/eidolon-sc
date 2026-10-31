@@ -47,6 +47,11 @@ EXEMPTING_SERVICES: tuple[Service, ...] = ("llm", "tts", "stt")
 """The services that may be exempting keys (GLOSSARY.md「免限额密钥」): never image
 generation, whose photos count by whose they are on alone."""
 
+Registration = Literal["open", "invite"]
+"""Who may sign up (GLOSSARY.md「注册方式」): anyone, or only those who bring an invite link
+(GLOSSARY.md「邀请链接」)."""
+REGISTRATIONS: tuple[Registration, ...] = get_args(Registration)
+
 ProxiedService = Literal[
     "chat_llm", "memory_llm", "judge", "embedding", "rerank", "tts", "stt", "image",
     "own_llm", "own_tts", "own_stt", "own_image",
@@ -228,6 +233,9 @@ DEFAULT_CALL_MINUTES = 10
 DEFAULT_TURNS_PER_CALL = 40
 """About what ten minutes of talking takes; a cap on typing turns in quickly during a call."""
 DEFAULT_PHOTOS_PER_HOUR = 5
+DEFAULT_VISITS_PER_HOUR = 5
+DEFAULT_READ_ALOUDS_PER_HOUR = 60
+"""As many as the text turns: one for each of her replies."""
 DEFAULT_CONCURRENT_CALLS = 10
 """What one process on the deployment's two cores carries, every call's audio on the one
 event loop."""
@@ -464,6 +472,15 @@ class Settings:
     reach_outs: bool = False
     """Whether characters reach out to users (GLOSSARY.md「搭话」), on the deployer's chat
     model; off unless `.env` turns it on, and the admin console may override it."""
+    schedule: bool = True
+    """Whether each week's jobs are published for producers to schedule (GLOSSARY.md「日程」);
+    on unless `.env` turns it off, and the admin console may override it."""
+    cycles: bool = True
+    """Whether her cycle has a part in how she is (GLOSSARY.md「周期」); on unless `.env`
+    turns it off, and the admin console may override it. Her cycle goes on all the same."""
+    bar: bool = True
+    """Whether the bar is open (GLOSSARY.md「酒吧」); on unless `.env` turns it off, and the
+    admin console may override it."""
     proxy: ProxySettings = field(default_factory=ProxySettings)
     """Which of the deployer's services go through which proxy; none unless `.env` sets
     one, and the admin console may override it."""
@@ -485,10 +502,14 @@ class Settings:
     train on, embeds users' memories (ADR-0005, revised)."""
     admins: frozenset[tuple[str, str]] = frozenset()
     """The identities, as (provider, subject), whose users are admins and may enter the
-    admin console (ADR-0013); without any, there is no admin console."""
+    admin console (ADR-0013); without any, there is no admin console, unless everyone is
+    an admin (`everyone_admin`)."""
     contact: str | None = None
-    """How to reach the deployer, told to banned users when they try to sign in; None
-    tells them no one."""
+    """How to reach the deployer, told to banned users when they try to sign in, and to
+    those turned away for want of an invite link; None tells them no one."""
+    registration: Registration = "open"
+    """Who may sign up (GLOSSARY.md「注册方式」): anyone unless `.env` takes only those
+    invited, and the admin console may override it."""
     stand_assets_url: str | None = None
     """Where browsers download the stands from, without a trailing slash: the public URL
     of the object storage they are synced to (ADR-0003, revised 2026-09-30). None shows
@@ -507,6 +528,18 @@ class Settings:
     def chat_model(self) -> ChatModelSettings:
         """The chat model, as text turns and calls each use it."""
         return ChatModelSettings(self.chat_llm, self.call_reasoning_effort)
+
+    @property
+    def everyone_admin(self) -> bool:
+        """Whether every user is an admin: with dev login, which lets anyone sign in as
+        anyone, so that no list keeps anyone out, and no admins listed (ADR-0013, revised
+        2026-10-29)."""
+        return self.dev_login and not self.admins
+
+    @property
+    def admin_console(self) -> bool:
+        """Whether there is an admin console: with admins listed, or everyone one."""
+        return bool(self.admins) or self.everyone_admin
 
     @property
     def stt_key(self) -> SttKey | None:
@@ -561,6 +594,9 @@ class Settings:
             exempting_keys=exempting_keys_from_env(),
             affinity_and_gifts=_switch("EIDOLON_AFFINITY_AND_GIFTS", default=True),
             reach_outs=_switch("EIDOLON_REACH_OUTS"),
+            schedule=_switch("EIDOLON_SCHEDULE", default=True),
+            cycles=_switch("EIDOLON_CYCLES", default=True),
+            bar=_switch("EIDOLON_BAR", default=True),
             proxy=proxy_from_env(),
             service_status=service_status_from_env(),
             domain=os.environ.get("EIDOLON_DOMAIN", "").strip() or None,
@@ -572,6 +608,7 @@ class Settings:
             stand_assets_url=stand_assets_url_from_env(),
             admins=admins_from_env(),
             contact=os.environ.get("EIDOLON_CONTACT", "").strip() or None,
+            registration=registration_from_env(),
         )
 
 
@@ -582,6 +619,17 @@ def _stt_provider() -> SttProvider:
             f"环境变量 STT_PROVIDER 只能是 {'、'.join(STT_PROVIDERS)}，而不是 {provider}"
         )
     return provider  # pyright: ignore[reportReturnType]  # checked above
+
+
+def registration_from_env() -> Registration:
+    """`EIDOLON_REGISTRATION`: `open` (the default) or `invite`."""
+    value = (os.environ.get("EIDOLON_REGISTRATION") or "").strip() or "open"
+    if value not in REGISTRATIONS:
+        raise RuntimeError(
+            f"环境变量 EIDOLON_REGISTRATION 只能是 open（谁都能注册）或 invite（凭邀请链接注册），"
+            f"而不是 {value}"
+        )
+    return value  # pyright: ignore[reportReturnType]  # checked above
 
 
 def fish_audio_model_from_env() -> FishAudioModel:
@@ -1107,10 +1155,12 @@ time limit (`EIDOLON_CALL_MINUTES=0`)."""
 
 @dataclass(frozen=True)
 class UsageLimits:
-    """How many text turns and voice calls each user may start in any hour, and how many
-    photos she may send them (GLOSSARY.md「照片」), counted across all their devices and
-    sign-in methods, how long and how many turns one call may last, and how many calls
-    there may be at once, all users' together, exempt ones too; None is no limit."""
+    """How many text turns, voice calls and visits to the bar (GLOSSARY.md「光顾」) each user
+    may start in any hour, how many photos she may send them (GLOSSARY.md「照片」), and how many
+    times her words may be read aloud to them (GLOSSARY.md「朗读」), counted across all their
+    devices and sign-in methods, how long and how many turns one
+    call may last, and how many calls there may be at once, all users' together, exempt ones
+    too; None is no limit."""
 
     turns_per_hour: int | None = DEFAULT_TURNS_PER_HOUR
     calls_per_hour: int | None = DEFAULT_CALLS_PER_HOUR
@@ -1118,6 +1168,8 @@ class UsageLimits:
     turns_per_call: int | None = DEFAULT_TURNS_PER_CALL
     photos_per_hour: int | None = DEFAULT_PHOTOS_PER_HOUR
     concurrent_calls: int | None = DEFAULT_CONCURRENT_CALLS
+    visits_per_hour: int | None = DEFAULT_VISITS_PER_HOUR
+    read_alouds_per_hour: int | None = DEFAULT_READ_ALOUDS_PER_HOUR
 
     @classmethod
     def from_env(cls) -> "UsageLimits":
@@ -1128,6 +1180,10 @@ class UsageLimits:
             turns_per_call=_limit("EIDOLON_TURNS_PER_CALL", DEFAULT_TURNS_PER_CALL),
             photos_per_hour=_limit("EIDOLON_PHOTOS_PER_HOUR", DEFAULT_PHOTOS_PER_HOUR),
             concurrent_calls=_limit("EIDOLON_CONCURRENT_CALLS", DEFAULT_CONCURRENT_CALLS),
+            visits_per_hour=_limit("EIDOLON_VISITS_PER_HOUR", DEFAULT_VISITS_PER_HOUR),
+            read_alouds_per_hour=_limit(
+                "EIDOLON_READ_ALOUDS_PER_HOUR", DEFAULT_READ_ALOUDS_PER_HOUR
+            ),
         )
 
 

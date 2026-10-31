@@ -58,8 +58,26 @@ Eidolon-SC 让你以 **283 事务所制作人**的身份，和原作中的偶像
       <p align="center"><sub><b>她发照片</b>：开口要，她按自己的样子和当时的情境拍一张</sub></p>
     </td>
     <td width="50%">
-      <img src="docs/images/gifts.webp" alt="礼物页：抽奖台、每日任务、成就、重置卡和背包里的礼物">
-      <p align="center"><sub><b>礼物</b>：每天抽奖，挑她喜欢的送</sub></p>
+      <img src="docs/images/gifts.webp" alt="玩法页：「礼物」「成就」和「日历」三张卡">
+      <p align="center"><sub><b>玩法</b>：抽奖、送礼、成就、日历</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/schedule.webp" alt="日历的周视图：左边是待排的工作，右边一周的日程，有做完的、进行中的、保存过的和草稿">
+      <p align="center"><sub><b>日程</b>：每周一发布一批工作，排进她们的一周，保存以后她就知道</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/cycles.webp" alt="周期页：头像条、她的月历上记下的经期和推算的经期、经前，右边周期、经期和记过的经期">
+      <p align="center"><sub><b>周期</b>：凭她的言行记下她的经期，替你推算下一次，并讲清怎么算</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/bar.webp" alt="酒吧 VA-283：像素画面里她在店里说话，右边是调酒台，右上角开着点唱机">
+      <p align="center"><sub><b>VA-283</b>：她来酒吧光顾，你照她的点单调饮品；画面致敬《VA-11 HALL-A》</sub></p>
     </td>
   </tr>
 </table>
@@ -94,7 +112,11 @@ Eidolon-SC 让你以 **283 事务所制作人**的身份，和原作中的偶像
 - 🇯🇵 **日语原声 + 中文字幕**：她用日语回答，保留口癖，每句附中文字幕（[ADR-0001](docs/adr/0001-japanese-replies-with-chinese-subtitles.md)）；专有名词按读音表念对。
 - 🎭 **会动的立绘**：通话时叠上原作的 Spine 立绘，会呼吸、眨眼、动嘴，随情绪换表情。原作出了新卡，每周同步一次就能穿。
 - 📷 **她发照片**：你开口要，她按自己的样子和当时的情境拍一张发来，只有全年龄的内容（[配置指南](docs/configuration.md#照片)）。
-- 💗 **好感度和礼物**：你说的话会让她亲近或疏远你，冒犯多了她会挂断电话、结束这段对话。每天抽奖得到礼物送给她，她会回应；做每日任务、解锁成就能多得抽奖次数。
+- 💗 **好感度和礼物**：你说的话会让她亲近或疏远你，冒犯多了她会挂断电话、结束这段对话。每天在玩法里抽奖得到礼物送给她，她会回应；解锁成就能多得抽奖次数。
+- 📅 **日历**：角色和制作人的生日、日本的节假日，她当天也知道。
+- 🗓️ **日程**：每周发布的工作，你排进她的一周，她知道并以此说话；做完的工作让她更亲近你（[配置指南](docs/configuration.md#日程)）。
+- 🌙 **周期**：她也有经期，经前、经期这几天会不舒服，体贴她有回报；你凭她的言行把经期记在周期页，页面替你推算下一次，并讲清怎么算（[配置指南](docs/configuration.md#周期)）。
+- 🍸 **VA-283**：她来酒吧光顾，你照她的点单调饮品。每天第一次玩完的光顾给一次抽奖，她也会更亲近你；第一次进店有はづき 教你调。画面和调法致敬《VA-11 HALL-A》。
 - 💌 **搭话**：你一阵子没来，她会在对话里先说几句；越亲近来得越早（[配置指南](docs/configuration.md#搭话)）。
 
 **她记得什么**
@@ -109,8 +131,8 @@ Eidolon-SC 让你以 **283 事务所制作人**的身份，和原作中的偶像
 
 **部署和运营**
 
-- 👥 **对公众开放**：Google 或 GitHub 登录，按用户限流，记忆互相隔离；用户可以彻底删除自己的数据，数据库每天加密备份到异地。
-- 📦 **数据包**：对话、照片、记忆和制作人档案导出成一个 zip，在别的部署导入后接着用；好感度和礼物不随行（[ADR-0025](docs/adr/0025-data-packages-leave-affinity-and-gifts-behind.md)）。
+- 👥 **对公众开放**：Google 或 GitHub 登录，也可以只让拿到邀请链接的人注册；按用户限流，记忆互相隔离；用户可以彻底删除自己的数据，数据库每天加密备份到异地。
+- 📦 **数据包**：对话、照片、记忆和制作人档案导出成一个 zip，在别的部署导入后接着用；好感度、礼物、日程和酒吧的光顾记录不随行（[ADR-0025](docs/adr/0025-data-packages-leave-affinity-and-gifts-behind.md)）。
 - 🔑 **自带密钥**：用户可以填自己的 LLM、语音合成、语音识别和生图密钥，用自己的额度，满足条件时不占限额（[配置指南](docs/configuration.md#自带密钥)）。密钥只存在浏览器里（[ADR-0017](docs/adr/0017-own-api-keys-stay-in-the-browser.md)）。
 - 🛠️ **后台**：看用量、花费和进行中的通话，改模型和限额不用重启，封禁用户、发公告；看不到任何人的对话和记忆。
 - 🚦 **服务状态**：用户在对话列表就能看到各项服务正不正常。
@@ -119,7 +141,22 @@ Eidolon-SC 让你以 **283 事务所制作人**的身份，和原作中的偶像
 
 ## 🚀 快速开始
 
-需要 Docker 与 Docker Compose，以及一个支持流式输出和工具调用的对话模型。
+### 让 Agent 帮你部署
+
+不熟悉 Docker 和各种 API key 也没关系：把下面这段话发给你用的编程 Agent（Claude Code、Codex、Cursor 等都行），它会照仓库里的[部署说明](docs/agents/deploying.md)一步步带你做，碰到报错也会帮你查。
+
+```text
+帮我部署 Eidolon-SC（https://github.com/Sallyn0225/eidolon-sc）。先把仓库克隆下来，
+再照仓库里 docs/agents/deploying.md 带我一步步做。要我注册账号、申请 key 的地方告诉我怎么做；
+key 我自己填进 .env，不贴给你。
+```
+
+> [!NOTE]
+> **为什么部署好了没有剧情、通话里也没有立绘？** 剧情文本和立绘素材的版权不属于本项目，不随仓库分发，仓库里只有同步工具。部署后自己同步一次就有了，Agent 会带你做（见部署说明的「剧情库」「立绘」）。同步之前，角色只凭人设回复，通话里只显示背景图。
+
+### 自己动手
+
+需要 Docker 与 Docker Compose，以及一个支持流式输出和工具调用的对话模型。不想装 Docker（比如在 Windows 上），也可以用 uv 和 Node.js 直接跑前后端，见下面的「开发」和[部署说明](docs/agents/deploying.md)的「三种跑法」。
 
 ```sh
 git clone https://github.com/Sallyn0225/eidolon-sc.git && cd eidolon-sc
@@ -138,9 +175,11 @@ docker compose up --build
 | 剧情库 | 向量化的 key：`SILICONFLOW_API_KEY`（默认）或 `GEMINI_API_KEY` |
 | 检索与记忆 | 向量化的 key、`SILICONFLOW_API_KEY`（重排），加判断模型：`JEV_API_KEY`（默认）、Cloudflare 或阿里云百炼的凭证 |
 | 照片 | 判断模型，加生图的 key：`NOVELAI_API_KEY` |
-| 立绘与招呼 | `EIDOLON_STAND_ASSETS_URL` 和存放素材的存储桶 |
+| 立绘、招呼与酒吧的音乐 | `EIDOLON_STAND_ASSETS_URL` 和存放素材的存储桶 |
 
 每项怎么配、配了以后有什么效果，见 **[配置指南](docs/configuration.md)**；所有环境变量的说明见 [`.env.example`](.env.example)。
+
+配好以后运行 `docker compose run --rm backend eidolon doctor`（直接跑时在 `backend/` 下 `uv run --env-file=../.env eidolon doctor`），它会逐项试一次各项服务，说明哪一项连不上、key 不对或者要走代理。
 
 ## 🧩 架构
 
@@ -161,12 +200,12 @@ flowchart LR
         DB[("SQLite<br/>对话 · 照片 · 记忆 · 剧情库")]
     end
 
-    Bucket[("对象存储<br/>立绘 · 招呼")]
+    Bucket[("对象存储<br/>立绘 · 招呼 · 酒吧音乐")]
 
     UI -- "文字回合 /api/*" --> API
     Admin --> API
     UI <-- "WebRTC 语音 + 字幕" --> Call
-    Landing & UI -. "立绘、招呼音频" .-> Bucket
+    Landing & UI -. "立绘、招呼和酒吧的音频" .-> Bucket
     API --> Engine
     Call -- "语音识别<br/>Soniox 或阿里云百炼" --> Engine
     Engine -- "Fish Audio 语音合成<br/>（带读音表）" --> Call
@@ -194,6 +233,7 @@ flowchart LR
 | [`.env.example`](.env.example) | 全部环境变量及说明 |
 | [架构决策记录](docs/adr/) | 为什么这样设计：日语原声、共享记忆、对公众开放、自带密钥只存在浏览器里等 |
 | [`GLOSSARY.md`](GLOSSARY.md) | 领域术语表 |
+| [社区玩法仓库](docs/community-forks.md) | 大家在各自 fork 上做的玩法，以及怎么登记自己的 |
 | [`DESIGN.md`](DESIGN.md) · [`PRODUCT.md`](PRODUCT.md) | 视觉规范 · 产品定位 |
 
 ## 🌐 部署
@@ -258,11 +298,13 @@ eidolon-sc/
 
 - **原作的内容**：剧情数据、角色音色、立绘素材不在仓库中，使用时须遵守各自来源的条款（ADR-0003）。仓库里的人设、角色资料、头像和 README 的截图里，角色与设定属于原作版权方。
 - **Spine Runtimes**：通话层立绘用的 [`frontend/public/vendor/spine-3.6/`](frontend/public/vendor/spine-3.6/README.md) 原样收录，适用它自己的 Spine Runtimes 许可证（[ADR-0009](docs/adr/0009-spine-runtime-without-editor-license.md)）。[`LICENSING.md`](LICENSING.md) 里有一条 AGPL 第 7 节的附加许可，允许两者组合分发。
-- **字体和音效**：落地页的字体子集适用 SIL Open Font License（见 `frontend/src/app/(landing)/fonts/`）；通话音效的来源和许可见 [`CREDITS.md`](frontend/public/sounds/CREDITS.md)。
+- **VA-11 HALL-A 的素材**：酒吧用的原版图片（`frontend/public/bar/img/`，含配方卡上的官方中文）、外框上的「VA-283」标志和原版的配乐、音效，版权归 Sukeban Games，见 [`LICENSING.md`](LICENSING.md)。配乐和音效不在仓库里，部署时传进存储桶。
+- **字体和音效**：落地页的字体子集和酒吧的像素字体「缝合像素」适用 SIL Open Font License（见 `frontend/src/app/(landing)/fonts/`、`frontend/public/bar/fonts/`）；通话音效的来源和许可见 [`CREDITS.md`](frontend/public/sounds/CREDITS.md)。
 
 ## 🙏 致谢
 
 - [LAPLACE Eidolon](https://laplace.live/eidolon)：为虚拟主播明前奶绿打造的实时语音 AI 分身，本项目的架构参考（未复用其代码）
+- [LAPLACE Cycles](https://laplace.live/cycles)：周期页推算算法的参考，感谢它公开了做法（未复用其代码）
 - [SCTranslationData](https://github.com/ShinyGroup/SCTranslationData)：剧情文本与中文翻译
 - [ShinyColorsDB](https://github.com/ShinyColorsDB)：原文剧情的镜像与立绘素材
 - [Pipecat](https://github.com/pipecat-ai/pipecat)：实时语音管线与 WebRTC 传输
@@ -272,12 +314,15 @@ eidolon-sc/
 - [Google Gemini API](https://ai.google.dev/)：Gemini Embedding（可选的向量化服务）
 - [TypeSafe Jev](https://docs.typesafe.ai/)、[OpenRouter](https://openrouter.ai/)、[Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/)、[阿里云百炼](https://help.aliyun.com/zh/model-studio/decision-model-api)：判断模型
 - [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes)：立绘的播放（spine-ts 3.6）
+- [VA-11 HALL-A](https://waifubartending.com/)（Sukeban Games）：酒吧的画面、调法和点唱机致敬原作，用了原版的图片、配乐和音效
+- [缝合像素](https://github.com/TakWolf/fusion-pixel-font)：酒吧的像素字体
 - [im@sparql](https://sparql.crssnky.xyz/imas/)、Lantis、ふじわらはじめ、imas-db、wikiwiki：世界设定里的偶像、唱片和演出资料
+- [LINUX DO](https://linux.do/)：从技术选型、开发到部署运维，许多经验来自这里的分享
 
 <div align="center">
 
 ---
 
-<sub>《偶像大师 闪耀色彩》及其角色的版权归 ©Bandai Namco Entertainment Inc. 所有。本项目为非官方粉丝作品，与版权方无关，角色由 AI 扮演。</sub>
+<sub>《偶像大师 闪耀色彩》及其角色的版权归 ©Bandai Namco Entertainment Inc. 所有。本项目为非官方粉丝作品，与版权方无关，角色由 AI 扮演。<br>《VA-11 HALL-A》及其图片、配乐和音效的版权归 ©Sukeban Games 所有。</sub>
 
 </div>

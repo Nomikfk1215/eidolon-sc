@@ -58,8 +58,26 @@ Eidolon-SC では、**283プロのプロデューサー**として原作のア�
       <p align="center"><sub><b>写真</b>：頼めば、その場の自分を一枚撮って送ってくれます</sub></p>
     </td>
     <td width="50%">
-      <img src="docs/images/gifts.webp" alt="プレゼント画面：抽選台、デイリータスク、実績、リセットカード、バックパックのプレゼント">
-      <p align="center"><sub><b>プレゼント</b>：毎日抽選して、好きなものを贈れます</sub></p>
+      <img src="docs/images/gifts.webp" alt="プレイ画面：「プレゼント」「実績」「カレンダー」の 3 枚のカード">
+      <p align="center"><sub><b>プレイ</b>：抽選、プレゼント、実績、カレンダー</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/schedule.webp" alt="カレンダーの週表示：左にまだ組んでいない仕事、右に 1 週間のスケジュール。終わった仕事、進行中の仕事、保存済みと下書きがある">
+      <p align="center"><sub><b>スケジュール</b>：毎週月曜に公開される仕事をアイドルたちの 1 週間に組み込み、保存すれば彼女に伝わる</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/cycles.webp" alt="周期ページ：アイコンの列、彼女のカレンダーに記録した月経と推定した月経・月経前、右に周期・月経の日数と記録した月経">
+      <p align="center"><sub><b>周期</b>：彼女の言動から月経を記録すると、次を推定し、どう計算したかを説明する</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/bar.webp" alt="バー VA-283：ピクセルアートの画面で彼女が店内で話し、右にはカクテル台、右上にはジュークボックスが開いている">
+      <p align="center"><sub><b>VA-283</b>：彼女がバーに来店し、あなたは注文どおりにドリンクを作る。画面は『VA-11 HALL-A』へのオマージュ</sub></p>
     </td>
   </tr>
 </table>
@@ -94,7 +112,11 @@ Eidolon-SC では、**283プロのプロデューサー**として原作のア�
 - 🇯🇵 **日本語の声 + 中国語字幕**：アイドルは日本語で答え、口癖もそのまま、一文ごとに中国語字幕が付きます（[ADR-0001](docs/adr/0001-japanese-replies-with-chinese-subtitles.md)）。固有名詞は読み表どおりに読みます。
 - 🎭 **動く立ち絵**：通話中は原作の Spine 立ち絵が呼吸し、まばたきし、口を動かし、感情に合わせて表情を変えます。新しいカードも週 1 回の同期で着られます。
 - 📷 **写真を送ってくれる**：頼めば、自分の姿とその場の状況に合わせて一枚撮って送ってくれます。全年齢の内容だけです（[設定ガイド](docs/configuration.ja.md#写真)）。
-- 💗 **好感度とプレゼント**：あなたの言葉しだいで心を開いたり距離を置いたりします。傷つけすぎると電話を切られ、会話も終わらせられます。毎日の抽選で手に入れたプレゼントを贈ると、応えてくれます。デイリータスクや実績で抽選回数も増やせます。
+- 💗 **好感度とプレゼント**：あなたの言葉しだいで心を開いたり距離を置いたりします。傷つけすぎると電話を切られ、会話も終わらせられます。「玩法」（プレイ）で毎日抽選して手に入れたプレゼントを贈ると、応えてくれます。実績を解放すると抽選回数も増やせます。
+- 📅 **カレンダー**：アイドルとプロデューサーの誕生日、日本の祝日。当日はアイドルも知っています。
+- 🗓️ **スケジュール**：毎週公開される仕事を彼女の 1 週間に組み込むと、彼女はそれを知っていて、それをふまえて話します。終えた仕事が彼女をあなたに近づけます（[設定ガイド](docs/configuration.ja.md#スケジュール)）。
+- 🌙 **周期**：彼女にも月経があり、月経前と月経中の数日は具合が悪く、気づかうと報われます。彼女の言動から周期ページに記録すると、次の月経を推定し、どう計算したかを説明します（[設定ガイド](docs/configuration.ja.md#周期)）。
+- 🍸 **VA-283**：彼女がバーに来店し、あなたは注文どおりにドリンクを作ります。毎日最初に最後まで遊んだ来店で抽選が 1 回もらえ、彼女との距離も縮まります。初めて来たときは、はづきが作り方を教えてくれます。画面と作り方は『VA-11 HALL-A』へのオマージュです。
 - 💌 **声かけ**：しばらく来ないと、会話の中でアイドルのほうから話しかけてくれます。親しいほど早く来ます（[設定ガイド](docs/configuration.ja.md#声かけ)）。
 
 **彼女が覚えていること**
@@ -109,8 +131,8 @@ Eidolon-SC では、**283プロのプロデューサー**として原作のア�
 
 **デプロイと運用**
 
-- 👥 **一般公開**：Google または GitHub でログイン。ユーザーごとに利用上限があり、メモリーは分離されています。ユーザーは自分のデータを完全に削除でき、データベースは毎日暗号化して別の場所にバックアップします。
-- 📦 **データパッケージ**：会話・写真・メモリー・プロデューサープロフィールを zip 一つに書き出し、別のデプロイで続きから使えます。好感度とプレゼントは持ち出せません（[ADR-0025](docs/adr/0025-data-packages-leave-affinity-and-gifts-behind.md)）。
+- 👥 **一般公開**：Google または GitHub でログイン。招待リンクを持つ人だけが登録できるようにもできます。ユーザーごとに利用上限があり、メモリーは分離されています。ユーザーは自分のデータを完全に削除でき、データベースは毎日暗号化して別の場所にバックアップします。
+- 📦 **データパッケージ**：会話・写真・メモリー・プロデューサープロフィールを zip 一つに書き出し、別のデプロイで続きから使えます。好感度・プレゼント・スケジュール・バーの来店記録は持ち出せません（[ADR-0025](docs/adr/0025-data-packages-leave-affinity-and-gifts-behind.md)）。
 - 🔑 **自前の API キー**：ユーザーは自分の LLM・音声合成・音声認識・画像生成のキーで自分のクレジットを使え、条件を満たせば利用上限に数えられません（[設定ガイド](docs/configuration.ja.md#自前の-api-キー)）。キーはブラウザーにだけ保存されます（[ADR-0017](docs/adr/0017-own-api-keys-stay-in-the-browser.md)）。
 - 🛠️ **管理画面**：利用量・費用・進行中の通話の確認、モデルや利用上限の変更（再起動不要）、ユーザーの利用停止、お知らせの配信ができます。誰の会話もメモリーも見られません。
 - 🚦 **サービス状況**：各サービスが正常かどうか、ユーザーは会話一覧から確認できます。
@@ -138,7 +160,7 @@ docker compose up --build
 | シナリオライブラリ | ベクトル化のキー：`SILICONFLOW_API_KEY`（デフォルト）または `GEMINI_API_KEY` |
 | 検索とメモリー | ベクトル化のキー、`SILICONFLOW_API_KEY`（並べ替え用）、判断モデル：`JEV_API_KEY`（デフォルト）、Cloudflare または Alibaba Cloud Model Studio の認証情報 |
 | 写真 | 判断モデルと画像生成のキー：`NOVELAI_API_KEY` |
-| 立ち絵とあいさつ | `EIDOLON_STAND_ASSETS_URL` と素材を置くストレージバケット |
+| 立ち絵、あいさつ、バーの音楽 | `EIDOLON_STAND_ASSETS_URL` と素材を置くストレージバケット |
 
 それぞれの設定方法と設定したときの効果は **[設定ガイド](docs/configuration.ja.md)** を、すべての環境変数の説明は [`.env.example`](.env.example) を参照してください。
 
@@ -161,12 +183,12 @@ flowchart LR
         DB[("SQLite<br/>会話 · 写真 · メモリー · シナリオライブラリ")]
     end
 
-    Bucket[("オブジェクトストレージ<br/>立ち絵 · あいさつ")]
+    Bucket[("オブジェクトストレージ<br/>立ち絵 · あいさつ · バーの音楽")]
 
     UI -- "テキストのターン /api/*" --> API
     Admin --> API
     UI <-- "WebRTC 音声 + 字幕" --> Call
-    Landing & UI -. "立ち絵、あいさつの音声" .-> Bucket
+    Landing & UI -. "立ち絵、あいさつ、バーの音声" .-> Bucket
     API --> Engine
     Call -- "音声認識<br/>Soniox または Alibaba Cloud Model Studio" --> Engine
     Engine -- "Fish Audio 音声合成<br/>（読み表つき）" --> Call
@@ -194,6 +216,7 @@ flowchart LR
 | [`.env.example`](.env.example) | すべての環境変数とその説明 |
 | [アーキテクチャ決定記録](docs/adr/) | なぜこう設計したか：日本語の声、共有メモリー、一般公開、自前のキーはブラウザーにだけ保存、など |
 | [`GLOSSARY.md`](GLOSSARY.md) | ドメイン用語集 |
+| [コミュニティのフォーク](docs/community-forks.md)（中国語） | みんなが自分のフォークで作った遊び方と、自分のフォークを登録する方法 |
 | [`DESIGN.md`](DESIGN.md) · [`PRODUCT.md`](PRODUCT.md) | ビジュアル仕様 · プロダクトの位置づけ |
 
 ## 🌐 デプロイ
@@ -258,11 +281,13 @@ eidolon-sc/
 
 - **原作のコンテンツ**：シナリオデータ、キャラクター音声、立ち絵素材はリポジトリに含まれておらず、利用時はそれぞれの提供元の条件に従う必要があります（ADR-0003）。リポジトリ内のキャラクターシート・キャラクター資料・アイコンと README のスクリーンショットについても、キャラクターと設定は原作の権利者に帰属します。
 - **Spine Runtimes**：通話画面の立ち絵に使う [`frontend/public/vendor/spine-3.6/`](frontend/public/vendor/spine-3.6/README.md) は無改変で収録しており、それ自身の Spine Runtimes ライセンスが適用されます（[ADR-0009](docs/adr/0009-spine-runtime-without-editor-license.md)）。[`LICENSING.md`](LICENSING.md) に AGPL 第 7 条の追加許可があり、両者を組み合わせて頒布することを認めています。
-- **フォントと効果音**：ランディングページのフォントサブセットには SIL Open Font License が適用されます（`frontend/src/app/(landing)/fonts/` を参照）。通話の効果音の出典とライセンスは [`CREDITS.md`](frontend/public/sounds/CREDITS.md) を参照してください。
+- **VA-11 HALL-A の素材**：バーで使う原作の画像（`frontend/public/bar/img/`、レシピカードの公式中国語を含む）、外枠の「VA-283」ロゴ、原作の音楽と効果音の著作権は Sukeban Games に帰属します。[`LICENSING.md`](LICENSING.md) を参照してください。音楽と効果音はリポジトリに含まれず、デプロイ時にバケットへアップロードします。
+- **フォントと効果音**：ランディングページのフォントサブセットとバーのピクセルフォント「縫合像素（Fusion Pixel）」には SIL Open Font License が適用されます（`frontend/src/app/(landing)/fonts/`、`frontend/public/bar/fonts/` を参照）。通話の効果音の出典とライセンスは [`CREDITS.md`](frontend/public/sounds/CREDITS.md) を参照してください。
 
 ## 🙏 謝辞
 
 - [LAPLACE Eidolon](https://laplace.live/eidolon)：VTuber・明前奶绿のために作られたリアルタイム音声 AI 分身。本プロジェクトのアーキテクチャの参考（コードは流用していません）
+- [LAPLACE Cycles](https://laplace.live/cycles)：周期ページの推定アルゴリズムの参考。やり方を公開してくれたことに感謝します（コードは流用していません）
 - [SCTranslationData](https://github.com/ShinyGroup/SCTranslationData)：シナリオテキストと中国語訳
 - [ShinyColorsDB](https://github.com/ShinyColorsDB)：原文コミュのミラーと立ち絵素材
 - [Pipecat](https://github.com/pipecat-ai/pipecat)：リアルタイム音声パイプラインと WebRTC 通信
@@ -272,12 +297,15 @@ eidolon-sc/
 - [Google Gemini API](https://ai.google.dev/)：Gemini Embedding（選択できるベクトル化サービス）
 - [TypeSafe Jev](https://docs.typesafe.ai/)、[OpenRouter](https://openrouter.ai/)、[Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/)、[Alibaba Cloud Model Studio](https://www.alibabacloud.com/help/en/model-studio/)：判断モデル
 - [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes)：立ち絵の再生（spine-ts 3.6）
+- [VA-11 HALL-A](https://waifubartending.com/)（Sukeban Games）：バーの画面、作り方、ジュークボックスは原作へのオマージュで、原作の画像、音楽、効果音を使っています
+- [縫合像素（Fusion Pixel）](https://github.com/TakWolf/fusion-pixel-font)：バーのピクセルフォント
 - [im@sparql](https://sparql.crssnky.xyz/imas/)、Lantis、ふじわらはじめ、imas-db、wikiwiki：世界設定のアイドル・CD・ライブのデータ
+- [LINUX DO](https://linux.do/)：技術選定から開発、デプロイと運用まで、多くの知見をここでの共有から得ました
 
 <div align="center">
 
 ---
 
-<sub>『アイドルマスター シャイニーカラーズ』およびそのキャラクターの著作権は ©Bandai Namco Entertainment Inc. に帰属します。本プロジェクトは非公式のファンメイド作品であり、権利者とは関係ありません。アイドルは AI が演じています。</sub>
+<sub>『アイドルマスター シャイニーカラーズ』およびそのキャラクターの著作権は ©Bandai Namco Entertainment Inc. に帰属します。本プロジェクトは非公式のファンメイド作品であり、権利者とは関係ありません。アイドルは AI が演じています。<br>『VA-11 HALL-A』およびその画像、音楽、効果音の著作権は ©Sukeban Games に帰属します。</sub>
 
 </div>

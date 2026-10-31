@@ -52,29 +52,43 @@ export type UserSort = (typeof USER_SORTS)[number];
  * the deployment's. */
 export type UserLimit = number | "unlimited" | null;
 
-/** The limits an admin set for the user, each apart, with a note for the admins: turns, calls and
- * the photos she sends them (GLOSSARY.md「照片」). */
+/** The limits an admin set for the user, each apart, with a note for the admins: turns, calls,
+ * the photos she sends them (GLOSSARY.md「照片」), visits to the bar (GLOSSARY.md「光顾」) and her words
+ * read aloud (GLOSSARY.md「朗读」). */
 export type AdminUserLimits = {
   turns_per_hour: UserLimit;
   calls_per_hour: UserLimit;
   photos_per_hour: UserLimit;
+  visits_per_hour: UserLimit;
+  read_alouds_per_hour: UserLimit;
   note: string | null;
   updated_at: string;
 };
 
+/** The limits the editor sets, by the name it holds each by, and as each is saved. */
+export const LIMIT_KINDS = {
+  turns: "turns_per_hour",
+  calls: "calls_per_hour",
+  photos: "photos_per_hour",
+  visits: "visits_per_hour",
+  readAlouds: "read_alouds_per_hour",
+} as const;
+export type LimitKind = keyof typeof LIMIT_KINDS;
+
 /** What the editor saves: the limits. */
-export type UserLimitsInput = Pick<AdminUserLimits, "turns_per_hour" | "calls_per_hour" | "photos_per_hour">;
+export type UserLimitsInput = Pick<AdminUserLimits, (typeof LIMIT_KINDS)[LimitKind]>;
 
 /** One limit as the editor holds it: which kind, and the number typed for "number". */
 /** A limit as the editor holds it: follow the deployment, a number of times (1 and up),
  * none, or only on their own keys (sent as 0). */
 export type LimitDraft = { choice: "default" | "number" | "unlimited" | "own_keys"; count: number | null };
 
-/** A user's own page adds when they were banned, the note only admins see, and their
- * recent usage. */
+/** A user's own page adds when they were banned, the note only admins see, the invite link
+ * they signed up through (GLOSSARY.md「邀请链接」), if one still kept, and their recent usage. */
 export type AdminUserDetails = AdminUser & {
   banned_at: string | null;
   ban_note: string | null;
+  invite: { id: number; note: string | null } | null;
   usage: AdminUserUsage;
 };
 
@@ -98,12 +112,17 @@ export function describeLimit(limit: UserLimit, photos = false): string {
   return photos ? t.photosPerHour(limit) : t.perHour(limit);
 }
 
-/** The user's own limits in a line: turns and calls, and the photos if set apart. */
+/** The user's own limits in a line: turns and calls, then the photos, the visits and the read-alouds
+ * if set apart. */
 export function describeLimits(limits: AdminUserLimits): string {
   const t = copy.admin.users.limits;
-  const line = t.summary(describeLimit(limits.turns_per_hour), describeLimit(limits.calls_per_hour));
+  let line = t.summary(describeLimit(limits.turns_per_hour), describeLimit(limits.calls_per_hour));
   const photos = limits.photos_per_hour ?? null;
-  return photos === null ? line : t.withPhotos(line, describeLimit(photos, true));
+  if (photos !== null) line = t.withPhotos(line, describeLimit(photos, true));
+  const visits = limits.visits_per_hour ?? null;
+  if (visits !== null) line = t.withVisits(line, describeLimit(visits));
+  const readAlouds = limits.read_alouds_per_hour ?? null;
+  return readAlouds === null ? line : t.withReadAlouds(line, describeLimit(readAlouds));
 }
 
 /** The editor's starting point for a limit the user has. */
@@ -117,13 +136,12 @@ export function limitDraft(limit: UserLimit): LimitDraft {
 /** What keeps the limits from being saved: a number chosen but none from 1 up given
  * (`count`), or all following the deployment, which is no limit of the user's own
  * (`needsOne`, put on the turns). */
-export type LimitProblem = { field: "turns" | "calls" | "photos"; reason: "count" | "needsOne" };
+export type LimitProblem = { field: LimitKind; reason: "count" | "needsOne" };
 
-/** The limits to save from the editor, or every problem that keeps them from being saved. */
+/** The limits to save from the editor's `drafts`, or every problem that keeps them from being saved,
+ * in the editor's order. */
 export function limitsInput(
-  turns: LimitDraft,
-  calls: LimitDraft,
-  photos: LimitDraft,
+  drafts: Record<LimitKind, LimitDraft>,
 ): { input: UserLimitsInput } | { problems: LimitProblem[] } {
   const limit = (draft: LimitDraft): UserLimit | undefined => {
     if (draft.choice === "default") return null;
@@ -131,18 +149,14 @@ export function limitsInput(
     if (draft.choice === "own_keys") return 0;
     return draft.count !== null && draft.count >= 1 ? draft.count : undefined;
   };
-  const [turnsPerHour, callsPerHour, photosPerHour] = [limit(turns), limit(calls), limit(photos)];
+  const limits = (Object.keys(LIMIT_KINDS) as LimitKind[]).map((kind) => [kind, limit(drafts[kind])] as const);
   const problems: LimitProblem[] = [];
-  if (turnsPerHour === null && callsPerHour === null && photosPerHour === null) {
-    problems.push({ field: "turns", reason: "needsOne" });
+  if (limits.every(([, value]) => value === null)) problems.push({ field: "turns", reason: "needsOne" });
+  for (const [kind, value] of limits) {
+    if (value === undefined) problems.push({ field: kind, reason: "count" });
   }
-  if (turnsPerHour === undefined) problems.push({ field: "turns", reason: "count" });
-  if (callsPerHour === undefined) problems.push({ field: "calls", reason: "count" });
-  if (photosPerHour === undefined) problems.push({ field: "photos", reason: "count" });
-  if (problems.length > 0 || turnsPerHour === undefined || callsPerHour === undefined || photosPerHour === undefined) {
-    return { problems };
-  }
-  return { input: { turns_per_hour: turnsPerHour, calls_per_hour: callsPerHour, photos_per_hour: photosPerHour } };
+  if (problems.length > 0) return { problems };
+  return { input: Object.fromEntries(limits.map(([kind, value]) => [LIMIT_KINDS[kind], value])) as UserLimitsInput };
 }
 
 /** The list's sort once a usage column's header is clicked: by that column, most first (the

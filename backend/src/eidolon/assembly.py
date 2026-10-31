@@ -5,7 +5,8 @@ characters and the world setting and gift catalog beside them, the identity prov
 the services users bring their own keys to, retrieval, memory, the conversation engine,
 usage limits, voice calls and reach-outs. It decides what is on. Retrieval needs the judge
 model, the embedder and the reranker all at hand, and memory is on only with retrieval, since only
-retrieval finds memories again; judging her emotion during calls needs only the judge
+retrieval finds memories again; the bar looks up her facts with the embedder and the
+reranker alone; judging her emotion during calls needs only the judge
 model, the same one; the
 background model is always at hand, being the chat model unless configured apart.
 
@@ -31,24 +32,37 @@ from dataclasses import dataclass, field
 import httpx
 
 from eidolon.accounts import Accounts
+from eidolon.invites import Invites
 from eidolon.activity import ActivityLog, metered_retrieval
 from eidolon.admission import Admissions
 from eidolon.affinity import Affinities
 from eidolon.announcements import Announcements
 from eidolon.backup import Backups
+from eidolon.bar import Bar
+from eidolon.bar_facts import BarFacts
+from eidolon.bar_lines import bar_lines_path, check_bar_lines, load_bar_lines
+from eidolon.bar_visits import bar_visits_path, check_bar_visits, load_bar_visits
 from eidolon.call import Calls, Speech, SpeechServices
 from eidolon.characters import Character, load_characters
+from eidolon.drink_catalog import check_bar_tastes, drinks_path, load_drink_catalog
 from eidolon.gift_catalog import Gift, check_liked_gifts, gifts_path, load_gift_catalog
 from eidolon.gifts import Gifts
 from eidolon.happenings import Happenings
+from eidolon.her_now import HerNow
 from eidolon.hot_words import hot_words
+from eidolon.job_list import jobs_path, load_job_list
 from eidolon.housekeeping import keep_tidy
 from eidolon.loop_lag import watch_the_loop
 from eidolon.randomness import Random, secure_random
 from eidolon.clock import Clock, utc_now
 from eidolon.config import DEFAULT_BAILIAN_STT_MODEL, Settings
+from eidolon.corpus import StoryCorpus
+from eidolon.cycle_records import CycleRecords
+from eidolon.cycles import Cycles
+from eidolon.data_access import Database
 from eidolon.data_package import DataPackages
 from eidolon.embedding import EMBEDDING_TIMEOUT, Embedder, open_embedder
+from eidolon.facts import CharacterFacts
 from eidolon.engine import ConversationEngine
 from eidolon.identity import IdentityProvider, ProviderName, open_identity_providers
 from eidolon.image_generation import GENERATION_TIMEOUT
@@ -60,6 +74,7 @@ from eidolon.own_keys import LLMService, OwnImageService, OwnKeys, ProviderLLMSe
 from eidolon.photos import Photos
 from eidolon.proxy import ProxyRoutes
 from eidolon.reach_outs import ReachOuts
+from eidolon.read_aloud import ReadAloud
 from eidolon.readings import load_readings, readings_path
 from eidolon.rerank import (
     FALLBACK_MODEL,
@@ -70,6 +85,7 @@ from eidolon.rerank import (
     thresholds_for,
 )
 from eidolon.retrieval import Retrieval, open_reference_sources
+from eidolon.schedule import Schedules, idols_of
 from eidolon.service_clients import ProviderClients, ServiceClients
 from eidolon.service_status import ServiceStatus, probes
 from eidolon.sponsor import Sponsor
@@ -83,9 +99,10 @@ log = logging.getLogger(__name__)
 Closer = Callable[[], Awaitable[None] | None]
 
 THREADS = 32
-"""How many threads the event loop's work waits on at once (`asyncio.to_thread`): the
-database's, mostly, for every turn, and a backup or data package taking minutes too. More
-than the default, a few on a small server, so that those do not keep turns waiting."""
+"""How many threads the event loop's work waits on at once, on the default executor: the
+data access layer's reads, for every turn, the work that is all computing (pictures,
+similarities), and a backup or data package taking minutes too. More than the
+default, a few on a small server, so that those do not keep turns waiting."""
 
 
 @dataclass
@@ -93,10 +110,14 @@ class Backend:
     """Everything the API serves from, ready to run."""
 
     settings: Settings
+    database: Database
+    """The database, as the modules moved onto the data access layer read and write it."""
     store: Store
     characters: dict[str, Character]
     gift_catalog: dict[str, Gift]
     """The gift catalog, by identifier."""
+    bar: Bar
+    """The bar, and every user's visit under way (GLOSSARY.md「酒吧」「光顾」)."""
     memories: Memories
     titles: Titles
     """Names conversations after their third turn."""
@@ -107,6 +128,8 @@ class Backend:
     speech: Speech
     """The speech services calls hear and speak with."""
     own_keys: OwnKeys
+    read_aloud: ReadAloud
+    """Reads her words aloud as users ask (GLOSSARY.md「朗读」)."""
     admissions: Admissions
     """Lets text turns and calls begin, and settles them."""
     accounts: Accounts
@@ -120,12 +143,14 @@ class Backend:
     """What admins write for every user to see."""
     sponsor: Sponsor
     """The code users may scan to sponsor the deployment, where it is on."""
+    invites: Invites
+    """The invite links admins make, for those who may sign up only through one."""
     affinities: Affinities
     """Every user's affinity with every character, where it is on."""
     gifts: Gifts
     """Every user's draw chances, backpack and reset cards, where gifts are open."""
     happenings: Happenings
-    """What happens between users and characters, as it counts towards their daily tasks."""
+    """What happens between users and characters, as it counts towards the achievements."""
     backups: Backups
     """The database's backups, as the admin console runs them, and the record of each."""
     photos: Photos
@@ -136,22 +161,35 @@ class Backend:
     """Exports users' data packages, and imports them."""
     reach_outs: ReachOuts
     """Has characters reach out to users once their time comes."""
+    schedules: Schedules
+    """Each week's jobs and every producer's schedule, where schedules are on."""
+    cycles: Cycles
+    """Where each user's each character's cycle has her, where cycles are on."""
+    her_now: HerNow
+    """What she knows of now, typing, in a call, reaching out or visiting the bar."""
+    cycle_records: CycleRecords
+    """The periods each user wrote down of each character, and what is estimated of her."""
     world: World | None = None
     """The world setting; None without its data file."""
+    corpus: StoryCorpus | None = None
+    """The story corpus retrieval searches; None with retrieval off."""
     _closers: list[Closer] = field(default_factory=list, repr=False)
     _keeping_fresh: asyncio.Task[None] | None = field(default=None, repr=False)
     _probing: asyncio.Task[None] | None = field(default=None, repr=False)
     _reaching_out: asyncio.Task[None] | None = field(default=None, repr=False)
+    _sweeping: asyncio.Task[None] | None = field(default=None, repr=False)
     _tidying: asyncio.Task[None] | None = field(default=None, repr=False)
     _watching: asyncio.Task[None] | None = field(default=None, repr=False)
+    _loading_stories: asyncio.Task[None] | None = field(default=None, repr=False)
 
     async def start(self) -> None:
         """What is done as the server starts, on its event loop: try the overrides of the
         configuration, falling back to `.env` where one fails; keep the price catalogs
         fresh from now on, fetching them in the background, try the services without
-        calls for their status, have characters reach out once their time comes, delete
-        what ages out (`housekeeping`), and watch how far behind the loop runs
-        (`loop_lag`)."""
+        calls for their status, have characters reach out once their time comes, do away
+        with visits to the bar left untouched, delete what ages out (`housekeeping`), watch
+        how far behind the loop runs (`loop_lag`), and load the story corpus's vectors to
+        search in the background."""
         asyncio.get_running_loop().set_default_executor(
             ThreadPoolExecutor(THREADS, thread_name_prefix="eidolon")
         )
@@ -159,16 +197,19 @@ class Backend:
         self._keeping_fresh = asyncio.create_task(self.prices.catalog.keep_fresh())
         self._probing = asyncio.create_task(self.service_status.keep_probing())
         self._reaching_out = asyncio.create_task(self.reach_outs.keep_reaching_out())
+        self._sweeping = asyncio.create_task(self.bar.keep_sweeping())
         self._tidying = asyncio.create_task(keep_tidy(self.usage.forget_old, self.activity.forget_old))
         self._watching = asyncio.create_task(watch_the_loop(lambda: self.calls.in_progress))
+        if self.corpus is not None:
+            self._loading_stories = asyncio.create_task(self.corpus.load())
 
     async def aclose(self) -> None:
         """Close what `build` opened, last opened first, once what `start` began is over."""
         tasks = [
             task
             for task in (
-                self._keeping_fresh, self._probing, self._reaching_out, self._tidying,
-                self._watching,
+                self._keeping_fresh, self._probing, self._reaching_out, self._sweeping,
+                self._tidying, self._watching, self._loading_stories,
             )
             if task is not None
         ]
@@ -191,19 +232,28 @@ def build(
     identity_providers: dict[ProviderName, IdentityProvider] | None = None,
     own_llm_service: LLMService | None = None,
     clients: ServiceClients | None = None,
-    catalog_transport: httpx.BaseTransport | None = None,
+    catalog_transport: httpx.AsyncBaseTransport | None = None,
     backup_transport: httpx.AsyncBaseTransport | None = None,
     image_transport: httpx.AsyncBaseTransport | None = None,
+    fish_transport: httpx.AsyncBaseTransport | None = None,
     random: Random | None = None,
     reach: Reach | None = None,
 ) -> Backend:
     """The backend `settings` describe, with any of the outside services passed in
     used instead of made. Raises RuntimeError, having opened nothing, if the character
-    configuration (her liked gifts and all), the world setting or the gift catalog is broken,
-    or a character is none of its idols and none of its staff."""
+    configuration (her liked gifts, her bar tastes and all), the world setting, the gift
+    catalog, the job list, the drink catalog or the bar's reasons and topics or its fixed lines
+    is broken, or a character is none of its idols and none of its staff."""
     characters = load_characters(settings.characters_path)
     gift_catalog = load_gift_catalog(gifts_path(settings.characters_path))
     check_liked_gifts(characters, gift_catalog)
+    job_list = load_job_list(jobs_path(settings.characters_path))
+    drink_catalog = load_drink_catalog(drinks_path(settings.characters_path))
+    check_bar_tastes(characters, drink_catalog)
+    bar_visits = load_bar_visits(bar_visits_path(settings.characters_path))
+    check_bar_visits(characters, bar_visits)
+    bar_lines = load_bar_lines(bar_lines_path(settings.characters_path))
+    check_bar_lines(bar_lines, drink_catalog)
     world = load_world(path := world_path(settings.characters_path))
     if world is None:
         log.info(
@@ -214,10 +264,11 @@ def build(
     else:
         world.check_characters(characters, path)
     clock = clock or utc_now
-    closers: list[Closer] = []
+    # Closed last, once what writes through it has finished.
+    database = Database(settings.database_path)
+    closers: list[Closer] = [database.close]
 
-    store = Store(settings.database_path)
-    closers.append(store.close)
+    store = Store(database)
     if identity_providers is None:
         identity_providers = open_identity_providers(settings.github, settings.google)
         closers.extend(p.aclose for p in identity_providers.values())
@@ -235,17 +286,15 @@ def build(
     speech = speech or SpeechServices(
         bailian_model, readings, hot_words(readings, characters.values(), world), routes=routes
     )
-    activity = ActivityLog(settings.database_path, clock)
-    closers.append(activity.close)
-    catalog = Catalog(settings.database_path, clock, catalog_transport)
-    closers.append(catalog.close)
-    prices = Prices(settings.database_path, clock, catalog)
-    closers.append(prices.close)
-    announcements = Announcements(settings.database_path, clock)
-    closers.append(announcements.close)
-    sponsor = Sponsor(settings.database_path, clock)
-    closers.append(sponsor.close)
-    backups = Backups(settings.database_path, clock, transport=backup_transport)
+    activity = ActivityLog(database, clock)
+    closers.append(activity.aclose)
+    catalog = Catalog(database, clock, catalog_transport)
+    closers.append(catalog.aclose)
+    prices = Prices(database, clock, catalog)
+    announcements = Announcements(database, clock)
+    sponsor = Sponsor(database, clock)
+    invites = Invites(database, clock)
+    backups = Backups(database, clock, transport=backup_transport)
     closers.append(backups.aclose)
     image_client = None
     if image_transport is not None:
@@ -254,8 +303,8 @@ def build(
         )
         closers.append(image_client.aclose)
     config = LiveConfig(
-        settings, clients or ProviderClients(routes), clock, activity=activity, speech=speech,
-        routes=routes, image_client=image_client,
+        settings, clients or ProviderClients(routes), clock, db=database, activity=activity,
+        speech=speech, routes=routes, image_client=image_client,
         **({"reach": reach} if reach is not None else {}),
     )
     closers.append(config.aclose)
@@ -308,18 +357,21 @@ def build(
     retrieval_judge = config.retrieval_judge()
 
     retrieval = None
+    corpus = None
+    character_facts = None
     if retrieval_judge is not None and embedder is not None and reranker is not None:
+        references = open_reference_sources(database, embedder, characters.values(), world)
+        corpus = references.corpus
+        character_facts = references.facts
+        closers.append(corpus.aclose)  # closed before the database, loading from it
         retrieval = Retrieval(
             retrieval_judge,
-            open_reference_sources(
-                settings.database_path, embedder, characters.values(), world
-            ),
+            references,
             reranker,
             lambda: config.rerank_thresholds.references,
         )
-        closers.append(retrieval.close)
         memories = Memories(
-            settings.database_path, characters, clock, embedder=embedder, reranker=reranker,
+            database, characters, clock, embedder=embedder, reranker=reranker,
             min_relevance=lambda: config.rerank_thresholds.memories,
         )
     else:
@@ -329,21 +381,19 @@ def build(
             " SILICONFLOW_API_KEY for reranking, and the judge model's (JEV_API_KEY, or"
             " CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID with JUDGE_PROVIDER=cloudflare)"
         )
-        memories = Memories(settings.database_path, characters, clock)
+        memories = Memories(database, characters, clock)
     closers.append(memories.aclose)  # closed before the clients, so what it writes down can finish
     titles = Titles(store, characters, gift_catalog)
     closers.append(titles.aclose)  # likewise, so what it is naming can finish
 
-    affinities = Affinities(settings.database_path, clock, lambda: config.affinity_on)
-    closers.append(affinities.close)
+    affinities = Affinities(database, clock, lambda: config.affinity_on)
     unphotographed = [c.id for c in characters.values() if not c.photographed]
     if config.image_settings is not None and unphotographed:
         log.warning(
             "%s have no photo_tag and photo_appearance in the character configuration, and"
             " send no photos", ", ".join(unphotographed),
         )
-    usage = UsageLimiter(settings.database_path, lambda: config.usage_limits, clock)
-    closers.append(usage.close)
+    usage = UsageLimiter(database, lambda: config.usage_limits, clock)
     # Users' own image generation, in the deployment's art style; in tests, on the same
     # fake as the deployer's, told apart by its key.
     own_images = OwnImageService(
@@ -352,18 +402,20 @@ def build(
     )
     closers.append(own_images.aclose)
     photos = Photos(store, config.image_generator, activity, usage, own_images.generator)
-    closers.append(photos.aclose)  # closed before the store and usage, so no photo is still kept
+    closers.append(photos.aclose)  # closed before the database, so no photo is still kept
+    cycles = Cycles(database, characters, settings.secret_key, lambda: config.cycles_on)
     gifts = Gifts(
-        settings.database_path, clock, lambda: config.affinity_on, affinities, characters,
-        gift_catalog, random or secure_random, store,
+        database, clock, lambda: config.affinity_on, affinities, characters, gift_catalog,
+        random or secure_random, cycles,
     )
-    closers.append(gifts.close)
-    happenings = Happenings(
-        settings.database_path, clock, lambda: config.affinity_on, gifts, activity
+    happenings = Happenings(database, lambda: config.affinity_on, gifts, activity)
+    schedules = Schedules(
+        database, clock, lambda: config.schedule_on, idols_of(characters, world), job_list,
+        affinities,
     )
-    closers.append(happenings.close)
+    her_now = HerNow(characters, world, schedules, cycles, affinities)
     engine = ConversationEngine(
-        store, characters, gift_catalog, memories, titles, clock, retrieval,
+        database, store, characters, gift_catalog, memories, titles, clock, her_now, retrieval,
         lambda: config.history_turns, world, affinities, config.affinity_judge(), photos,
         happenings,
     )
@@ -374,24 +426,39 @@ def build(
     admissions = Admissions(
         usage, activity, own_keys, cooldown_until=affinities.cooldown_until
     )
+    closers.append(admissions.aclose)  # closed after the calls, which may leave some to settle
+    # The bar looks in her facts with the text turns' own, if they have them, needing no
+    # judge model.
+    bar_facts = None
+    if embedder is not None and reranker is not None:
+        if character_facts is None:
+            character_facts = CharacterFacts(database, embedder, characters.values())
+        bar_facts = BarFacts(character_facts, embedder, reranker)
+    bar = Bar(
+        database, clock, characters, drink_catalog, bar_visits, bar_lines, admissions,
+        lambda: config.bar_on, random or secure_random, her_now, world=world,
+        affinities=affinities, gifts=gifts, facts=bar_facts,
+    )
+    closers.append(bar.aclose)  # closed before the database, so each visit over is recorded
     calls = Calls(
         settings, engine, admissions, own_keys, lambda: config.usage_limits, speech, clock, store,
         happenings,
     )
     closers.append(calls.aclose)  # closed before memory, so no call is still taking turns
-    affinities.on_cooldown(calls.cooled)
+    engine.on_cooled(calls.cooled)
     engine.on_ended(calls.conversation_ended)
     reach_outs = ReachOuts(
-        settings.database_path, store, engine, characters, config, affinities, activity, usage,
+        database, store, engine, characters, config, affinities, activity,
         calls.in_call, clock, random or secure_random,
     )
-    closers.append(reach_outs.close)
     config.on_change(gifts.notice)
     return Backend(
         settings=settings,
+        database=database,
         store=store,
         characters=characters,
         gift_catalog=gift_catalog,
+        bar=bar,
         memories=memories,
         titles=titles,
         engine=engine,
@@ -400,24 +467,32 @@ def build(
         calls=calls,
         speech=speech,
         own_keys=own_keys,
+        read_aloud=ReadAloud(own_keys, usage, activity, readings, routes, fish_transport),
         admissions=admissions,
-        accounts=Accounts(store, clock, memories, calls, settings.secret_key),
+        accounts=Accounts(
+            store, clock, memories, calls, invites, lambda: config.registration,
+            settings.admins, settings.secret_key,
+        ),
         identity_providers=identity_providers,
         activity=activity,
         config=config,
         prices=prices,
         announcements=announcements,
         sponsor=sponsor,
+        invites=invites,
         affinities=affinities,
         gifts=gifts,
         happenings=happenings,
         backups=backups,
         photos=photos,
         service_status=service_status,
-        data_packages=DataPackages(
-            settings.database_path, store, memories, characters, gift_catalog, clock
-        ),
+        data_packages=DataPackages(database, store, memories, characters, gift_catalog, clock),
         reach_outs=reach_outs,
+        schedules=schedules,
+        cycles=cycles,
+        her_now=her_now,
+        cycle_records=CycleRecords(database, clock, characters, cycles),
         world=world,
+        corpus=corpus,
         _closers=closers,
     )

@@ -23,7 +23,9 @@ from eidolon.config import (
 )
 from eidolon.live_config import (
     AFFINITY,
+    BAR,
     CHAT_LLM,
+    CYCLES,
     IMAGE,
     JUDGE,
     JUDGE_THRESHOLDS,
@@ -32,7 +34,9 @@ from eidolon.live_config import (
     PROXY,
     REACH_OUTS,
     READ_ONLY,
+    REGISTRATION,
     RERANK,
+    SCHEDULE,
     SERVICE_STATUS,
     STT,
     STT_KEY_FIELDS,
@@ -150,6 +154,8 @@ class LimitsInput(BaseModel):
     turns_per_hour: Any
     calls_per_hour: Any
     photos_per_hour: Any
+    visits_per_hour: Any
+    read_alouds_per_hour: Any
     call_minutes: Any
     turns_per_call: Any
     concurrent_calls: Any
@@ -171,6 +177,26 @@ class ReachOutsInput(BaseModel):
 
     enabled: Any
     per_day: Any
+
+
+class ScheduleInput(BaseModel):
+    """Whether each week's jobs are published for producers to schedule, true or false;
+    checked by the live configuration."""
+
+    enabled: Any
+
+
+class CyclesInput(BaseModel):
+    """Whether her cycle has a part in how she is, true or false; checked by the live
+    configuration."""
+
+    enabled: Any
+
+
+class BarInput(BaseModel):
+    """Whether the bar is open, true or false; checked by the live configuration."""
+
+    enabled: Any
 
 
 class ProxyInput(BaseModel):
@@ -211,6 +237,12 @@ class ServiceStatusInput(BaseModel):
     image: StrictBool
 
 
+class RegistrationInput(BaseModel):
+    """Who may sign up, `open` or `invite`; checked by the live configuration."""
+
+    mode: Any
+
+
 INPUTS: dict[str, type[BaseModel]] = {
     CHAT_LLM: ChatLLMInput,
     MEMORY_LLM: LLMInput,
@@ -223,8 +255,12 @@ INPUTS: dict[str, type[BaseModel]] = {
     LIMITS: LimitsInput,
     AFFINITY: AffinityInput,
     REACH_OUTS: ReachOutsInput,
+    SCHEDULE: ScheduleInput,
+    CYCLES: CyclesInput,
+    BAR: BarInput,
     PROXY: ProxyInput,
     SERVICE_STATUS: ServiceStatusInput,
+    REGISTRATION: RegistrationInput,
 }
 
 

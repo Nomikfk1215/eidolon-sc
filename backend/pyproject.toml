@@ -7,10 +7,11 @@ license = "AGPL-3.0-or-later"
 dependencies = [
     "cryptography>=50.0.2",
     "fastapi>=0.143.0",
+    "holidays>=0.107",
     "httpx[socks]>=0.28.1",
     "loguru>=0.7.3",
     "numpy>=2.4.6",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
     "pipecat-ai[fish,soniox,webrtc]>=1.12.0",
     "pyrage>=1.4.0",
     "python-socks[asyncio]>=3.1.1",
@@ -32,8 +33,14 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.17.0",
 ]
+
+[tool.uv]
+# pipecat-ai 1.13 还要求 Pillow<13，挡住了 13.0.0 的安全修复。上游已放开（pipecat-ai/pipecat#6286），
+# 发版后升 pipecat、删掉这条。pipecat 只在图像帧和视觉服务里用 Pillow，我们不走那些路径
+override-dependencies = ["pillow>=13.0.0"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

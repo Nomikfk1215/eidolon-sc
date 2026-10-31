@@ -260,6 +260,8 @@ describe("limits", () => {
     turns_per_hour: "2",
     calls_per_hour: UNLIMITED,
     photos_per_hour: "5",
+    visits_per_hour: "3",
+    read_alouds_per_hour: "60",
     call_minutes: "10",
     turns_per_call: "40",
     concurrent_calls: "10",
@@ -280,6 +282,8 @@ describe("limits", () => {
         turns_per_hour: 2,
         calls_per_hour: 0,
         photos_per_hour: 5,
+        visits_per_hour: 3,
+        read_alouds_per_hour: 60,
         call_minutes: 10,
         turns_per_call: 40,
         concurrent_calls: 10,
@@ -455,6 +459,21 @@ describe("reach-outs", () => {
         problems: [{ field: "per_day", reason: "positive" }],
       });
     }
+  });
+});
+
+describe("schedule", () => {
+  const spec = ITEM_SPECS.schedule;
+
+  it("send only the switch", () => {
+    expect(formOf(spec, { enabled: true })).toEqual({ enabled: "true" });
+    expect(changeOf(spec, { enabled: "false" }, true)).toEqual({ change: { enabled: false } });
+  });
+});
+
+describe("cycles and the bar", () => {
+  it("are cards of limits and play, after the schedule", () => {
+    expect(TAB_ITEMS.limits).toEqual(["limits", "affinity", "reach_outs", "schedule", "cycles", "bar"]);
   });
 });
 

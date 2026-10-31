@@ -29,6 +29,8 @@ from tests.fakes import (
 from tests.test_delete_account import rows_mentioning, user_id
 from tests.test_memories import KYOTO, OSAKA, TOKYO, superseding
 from tests.test_memory_management import memories
+from tests.test_schedule_saving import WEDNESDAY_AFTERNOON, WEEK, placed, publish, save
+from tests.test_schedule_weeks import schedule
 from tests.test_shared_memory import CAT, REPLY, memories_section, memorized, turn
 from tests.test_text_turn import start_conversation
 
@@ -39,7 +41,10 @@ PROFILE = {
     "birthday": {"month": 2, "day": 29},
 }
 EMPTY_PROFILE = {"form_of_address": None, "gender": None, "timezone": None, "birthday": None}
-NOTHING_ELSE = {"conversations": 0, "photos": 0, "memories": 0, "skipped": []}
+NOTHING_ELSE = {
+    "conversations": 0, "photos": 0, "memories": 0, "skipped": [], "cycles": 0,
+    "cycles_skipped": 0,
+}
 
 
 def other_deployment(make_client: ClientFactory, settings: Settings, tmp_path: Path,
@@ -115,7 +120,7 @@ async def test_the_producer_profile_moves_to_another_deployment(
     entries, manifest, data = unzipped(package)
     assert [e.filename for e in entries] == ["manifest.json", "data.json"]
     assert entries[0].compress_type == zipfile.ZIP_STORED
-    assert manifest["format"] == 2
+    assert manifest["format"] == 3
     assert manifest["categories"] == ["profile"]
     assert manifest["counts"] == {"profile": 1}
     assert data == {"profile": {
@@ -170,6 +175,27 @@ async def test_categories_left_out_are_neither_exported_nor_imported(
     assert (await there.get("/api/profile")).json()["form_of_address"] == "P"
 
 
+async def test_the_schedule_is_neither_exported_nor_imported(
+    make_client: ClientFactory, settings: Settings, tmp_path: Path
+):
+    clock = FakeClock(WEDNESDAY_AFTERNOON)
+    here = make_client(FakeLLM(), clock=clock)
+    there_settings = replace(settings, database_path=tmp_path / "other.db")
+    there = make_client(FakeLLM(), settings=there_settings, clock=clock)
+    for deployment, job in ((settings, "lesson-here"), (there_settings, "lesson-there")):
+        publish(deployment.database_path, WEEK, (job, 1, None))
+    await save(here, WEEK, placed("lesson-here", 4, 0))
+    await save(there, WEEK, placed("lesson-there", 5, 0))
+
+    package = await export(here, ",".join(data_package.CATEGORIES))
+    res = await import_package(there, package, ",".join(data_package.CATEGORIES))
+
+    with zipfile.ZipFile(io.BytesIO(package)) as unzipping:
+        assert not any(b"lesson-here" in unzipping.read(f) for f in unzipping.namelist())
+    assert res.status_code == 200, res.text
+    assert (await schedule(there))["this_week"]["placements"] == [placed("lesson-there", 5, 0)]
+
+
 async def test_a_user_exports_only_their_own_profile(make_client: ClientFactory):
     await make_client(FakeLLM(), "friend").put("/api/profile", json=PROFILE)
 
@@ -191,9 +217,9 @@ async def test_a_package_from_a_newer_version_is_refused_whatever_its_entries(
     make_client: ClientFactory,
 ):
     client = make_client(FakeLLM())
-    newer = json.dumps({**MANIFEST, "format": 3, "categories": ["albums"]})
+    newer = json.dumps({**MANIFEST, "format": 4, "categories": ["albums"]})
     packages = {
-        "entries as now": package_of({**MANIFEST, "format": 3, "categories": ["albums"]}, {}),
+        "entries as now": package_of({**MANIFEST, "format": 4, "categories": ["albums"]}, {}),
         "no data.json, entries of its own": _zip(
             {"manifest.json": newer, "albums.json": "{}", "albums/1.json": "{}"}
         ),
@@ -264,6 +290,7 @@ async def test_memories_move_to_another_deployment_superseded_as_they_were(
     await turn(here, await start_conversation(here, "mano"), "我住在大阪")
     await turn(here, await start_conversation(here, "kogane"), "我搬到东京了")
     await turn(here, await start_conversation(here, "mano"), "我家的猫叫小白哦")
+    kept = await remembered(here)  # once all three are written down
     there = other_deployment(make_client, settings, tmp_path)
 
     package = await export(here, "memories")
@@ -284,8 +311,8 @@ async def test_memories_move_to_another_deployment_superseded_as_they_were(
 
     assert res.status_code == 200, res.text
     assert res.json() == {**NOTHING_ELSE, "memories": 3, "profile": False}
-    assert await remembered(there) == await remembered(here)
-    assert [m[4] for m in await remembered(there)] == [False, False, True]
+    assert await remembered(there) == kept
+    assert [m[4] for m in kept] == [False, False, True]
 
 
 def memories_package(*memories: dict) -> bytes:
@@ -310,6 +337,7 @@ async def test_a_memory_already_here_is_not_added_again_and_stands_in_for_it(
     """Also importing the same package twice: the second time, every memory is here."""
     client = remembering(make_client, memorized(TOKYO))
     await turn(client, await start_conversation(client, "kogane"), "我搬到东京了")
+    await memories(client)  # once Tokyo is written down: importing does not wait for it
     package = memories_package(
         packaged_memory(1, OSAKA, superseded_by=2),
         packaged_memory(2, TOKYO, superseded_by=3),  # here, holding: left holding

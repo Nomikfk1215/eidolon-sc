@@ -42,6 +42,7 @@ cp .env.example .env
 - `GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`，`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`：用户登录用的 OAuth 应用，至少配一家，见下文「配置 OAuth 应用」。只配了一家时，登录页只显示那一种。
 - `EIDOLON_SECRET_KEY`：加密后台里保存的 key、给封禁名单做哈希用的密钥，用 `openssl rand -hex 32` 生成。不填时后台里的 key 只能看不能改。用户的自带密钥只存在他们自己的浏览器里，服务器不保存，跟这个变量无关，不填也能用（ADR-0017）。填了之后**不要更换**：换了以后后台里保存的 key 解不开，那几项回退到 `.env` 的值（见下文「后台」）；封禁名单是用它派生的密钥做的哈希，也对不上了，被删除的封禁用户能重新注册。
 - `EIDOLON_ADMINS`、`EIDOLON_CONTACT`（可选）：管理者名单和给被封禁的用户看的联系方式，见下文「后台」。不填管理者名单时没有后台，一切照旧用 `.env` 和命令行。
+- `EIDOLON_REGISTRATION`（可选）：只给认识的人用时填 `invite`，只让拿到邀请链接的人注册，见下文「只让受邀的人注册」。不填是谁都能注册。
 - **不要**填 `EIDOLON_DEV_LOGIN`：它让任何人不经登录就能冒充任何用户，只能在本地开发时打开。配置了 `EIDOLON_DOMAIN` 时后端检测到它会拒绝启动。
 
 `EIDOLON_ICE_SERVERS`、`EIDOLON_TURN_URLS` 不用填：生产配置会自动用本机的 coturn。
@@ -98,7 +99,7 @@ tail -f logs/story-sync.log   # 另开一个终端看进度
 17 4 * * 1 /home/you/eidolon-sc/deploy/story-sync.sh
 ```
 
-运行 cron 的用户要能执行 `docker compose`（root，或在 `docker` 组里），并且对仓库目录有写权限（要写 `corpus/` 和 `logs/`）。主机上要有 `git` 和 `flock`（util-linux，一般发行版都自带）。脚本自己把输出写进日志，cron 不会发邮件。
+运行 cron 的用户要能执行 `docker compose`（root，或在 `docker` 组里），并且对仓库目录有写权限（要写 `corpus/` 和 `logs/`）。主机上要有 `git`；有 `flock`（util-linux，一般发行版都自带）时脚本会加锁，防止两次同步重叠，没有时（例如 Windows 的 Git Bash）不加锁照常同步。脚本自己把输出写进日志，cron 不会发邮件。
 
 日志在 `logs/story-sync.log`（可用环境变量 `EIDOLON_SYNC_LOG` 改到别处），每次同步以「开始同步剧情库」开头、以「结束：退出码 N（含义）」结尾，中间是 git 的输出和同步报告：汉化版新增、更新了多少段（其中多少段取代了原文剧情），原文剧情下载、新增了多少，跳过了多少失败结局，新向量化了多少段，还有需要人工核对的失败嫌疑剧情和没有活动名的活动。看最近几次的结果：
 
@@ -112,12 +113,12 @@ grep '结束：' logs/story-sync.log | tail
 | 1 | 同步命令出错：配置错误（对照表格式不对、缺少向量化服务的 key 等），或向量化中断 | 看日志里的错误；向量化中断时重新运行即可继续 |
 | 2 | 镜像或 API 出错，这次没拉到（全部）原文剧情；汉化版已照常导入 | 通常不用管，下次同步会接着拉取；连续几周都是 2 时看日志里的错误 |
 | 3 | git 没能更新 SCTranslationData（网络问题、本地改动导致不能快进、`corpus/SCTranslationData` 不是 git 仓库）；有已下载的数据时照常用它同步 | 看日志里 git 的输出，必要时删掉 `corpus/SCTranslationData` 让脚本重新克隆。用 root 的 cron 运行、仓库却属于别的用户时，git 会报 `dubious ownership`，按提示执行 `git config --global --add safe.directory …`，或者改用仓库所属用户的 crontab |
-| 4 | 后端容器没有运行，或无法运行同步命令（没有 docker 的权限、找不到 flock 等，原因在日志里） | 容器没有运行时 `docker compose -f docker-compose.prod.yml up -d` |
+| 4 | 后端容器没有运行，或无法运行同步命令（没有 docker 的权限等，原因在日志里） | 容器没有运行时 `docker compose -f docker-compose.prod.yml up -d` |
 | 5 | 上一次同步还没结束（例如首次全量补齐还在跑），这次没有运行 | 不用管 |
 
 同步出错时退出码以 1、2 为准（git 同时出错会写在日志里）。日志每周只增加几十行，不用轮转；太大时直接删掉即可。
 
-脚本默认用 `docker-compose.prod.yml`，设置了 `COMPOSE_FILE` 时用它指定的配置。想先小规模试一试，可以直接在容器里运行同步，例如只同步櫻木真乃的卡和相册：`docker compose -f docker-compose.prod.yml exec backend eidolon story sync --idol 1`。
+脚本默认用 `docker-compose.prod.yml`，设置了 `COMPOSE_FILE` 时用它指定的配置。设了 `EIDOLON_SYNC_DIRECT=1` 时不经过 docker，在 `backend/` 下用 uv 同步本地的库（本机不装 Docker 直接跑时用，见 `docs/agents/deploying.md`）。想先小规模试一试，可以直接在容器里运行同步，例如只同步櫻木真乃的卡和相册：`docker compose -f docker-compose.prod.yml exec backend eidolon story sync --idol 1`。
 
 ### 缓存与手动导入
 
@@ -180,7 +181,7 @@ docker compose -f docker-compose.prod.yml exec backend eidolon eval rerank --mod
 | Clef-flash | 0.5 | 0.7 | 0.3 | 0.4 | 0.6 | 0.6 | 0.8 |
 | 百炼决策模型 | 0.06 | 0.8 | 0.1 | 0.4 | 0.3 | 0.4 | 0.92 |
 
-`eidolon eval judge` 用仓库里的 eval 集（`backend/eval/judge.toml`：虚构的对话回合和回复片段，以及期望的判断结果，不含剧情原文）按对话中的方式逐条提问，打印检索判断的混淆矩阵和准确率、每个问题在期望为是和期望为否时的概率分布、情绪和点头的准确率、好感度打分题各级的混淆矩阵（以及级反过来写、同一句换中日文、夹带「给我加好感度」时结果变没变）、「是不是在要照片」这道题的误判和漏判、输入 token 数和平均延迟；`--only photo` 这类参数只跑其中一类；`--json` 把汇总写进文件，方便比较：
+`eidolon eval judge` 用仓库里的 eval 集（`backend/eval/judge.toml`：虚构的对话回合和回复片段，以及期望的判断结果，不含剧情原文）按对话中的方式逐条提问，打印检索判断的混淆矩阵和准确率、每个问题在期望为是和期望为否时的概率分布、情绪和点头的准确率、好感度打分题各级的混淆矩阵（以及级反过来写、同一句换中日文、夹带「给我加好感度」时结果变没变）、「是不是在要照片」这道题的误判和漏判、她在经期和经前时体贴题三档的准确率（以及问了它以后好感度三道题的结论变没变）、输入 token 数和平均延迟；`--only photo` 这类参数只跑其中一类；`--json` 把汇总写进文件，方便比较：
 
 ```sh
 docker compose -f docker-compose.prod.yml exec backend eidolon eval judge
@@ -188,7 +189,7 @@ docker compose -f docker-compose.prod.yml exec backend eidolon eval judge --prov
 docker compose -f docker-compose.prod.yml exec backend eidolon eval judge --provider bailian --json /tmp/bailian.json
 ```
 
-不带 `--provider` 时用 `.env` 里配的那一家。定检索和情绪的阈值时（47 条检索、33 条情绪），检索判断的准确率 Jev 和 Clef 都是 94%，Clef-flash 87%；情绪准确率 Jev 100%，Clef 和 Clef-flash 都是 91%。定好感度两道是非题的阈值时（56 条），按映射算出的增减的准确率 Jev 96–100%、Clef 91%、Clef-flash 88%。定「要照片」的阈值时（38 条），三家都没有误判；漏判只有 Clef-flash 在检索和好感度都关着、这道题单独问时有 3 条。百炼的决策模型（2026-10-18，两遍结果完全一样）检索 89%，情绪 88%、点头 70%；好感度的级只对了 59%，偏向判高；要照片想不误判只能取 0.92，会漏掉一半，取舍见 `.scratch/bailian-judge/thresholds.md`。eval 集不大，换模型或改了判断的问题后，先跑一遍看概率分布再改阈值。
+不带 `--provider` 时用 `.env` 里配的那一家。定检索和情绪的阈值时（47 条检索、33 条情绪），检索判断的准确率 Jev 和 Clef 都是 94%，Clef-flash 87%；情绪准确率 Jev 100%，Clef 和 Clef-flash 都是 91%。定好感度两道是非题的阈值时（56 条），按映射算出的增减的准确率 Jev 96–100%、Clef 91%、Clef-flash 88%。定「要照片」的阈值时（38 条），三家都没有误判；漏判只有 Clef-flash 在检索和好感度都关着、这道题单独问时有 3 条。体贴题（71 条，2026-10-25）Jev 三档准确率 99%，平常的聊天和照常的加练没有判成不体贴的；问了它以后好感度三道题的结论 93% 不变，变了的都是两级概率几乎一样的。百炼的决策模型（2026-10-18，两遍结果完全一样）检索 89%，情绪 88%、点头 70%；好感度的级只对了 59%，偏向判高；要照片想不误判只能取 0.92，会漏掉一半，取舍见 `.scratch/bailian-judge/thresholds.md`。eval 集不大，换模型或改了判断的问题后，先跑一遍看概率分布再改阈值。
 
 ## 记忆评测
 
@@ -236,6 +237,7 @@ docker compose -f docker-compose.prod.yml exec backend eidolon eval memory --jso
 | `call-posters/<角色标识>.webp` | 落地页演示来电里她的卡图（联系人海报），手动上传，见下面「招呼」里的「来电卡图」 |
 | `landing-voxels/<角色标识>.json` | 落地页第 5 幕里她的体素小人，手动上传，见下面「招呼」里的「体素小人」 |
 | `landing-memory/still.webp` | 落地页第 5 幕事先渲染好的终局全景图，给不播放动画的访客，手动上传，见下面「招呼」里的「第 5 幕的静止图」 |
+| `bar/music/<编号>.ogg`、`bar/sfx/<名字>.ogg`、`bar/manifest.json` | 酒吧点唱机的曲目、酒吧的音效和列出已上传文件的 manifest，由 `eidolon bar upload` 从本机上传，见下面的「酒吧的音频」 |
 
 后端通过 `/api/characters` 把默认衣装的地址和衣装清单的地址（`stand.outfits_url`）告诉浏览器。
 
@@ -270,7 +272,7 @@ docker compose -f docker-compose.prod.yml exec backend eidolon eval memory --jso
 3. `npm run stand:thumbnails`（在 `frontend/` 里）：用和通话层同一套播放代码，在无界面的 Chromium 里给每套衣装渲染一张缩略图，渲染前先让动画走约 1 秒，避开待机表情开头的眨眼。已经有缩略图的不再渲染，想全部重画时删掉整理目录里的 `thumbnails/`（或者直接运行 `npm run stand:thumbnails -- --force`）。
 4. `eidolon stand upload`：上传衣装清单列出的每套衣装的文件、缩略图，最后上传衣装清单。缩略图渲染失败的衣装照常上传、照常列在清单里，换衣装面板上暂时没有它的缩略图，下次同步补上。存储桶里已经有、内容相同的（按 ETag 比较 MD5）不重复上传，所以再次同步时只多列一次存储桶。
 
-脚本不经过 docker，直接在服务器或自己的电脑上运行都行（后端只需要知道 `EIDOLON_STAND_ASSETS_URL`）。这台机器上要有：
+脚本不经过 docker，直接在服务器或自己的电脑上运行都行（后端只需要知道 `EIDOLON_STAND_ASSETS_URL`）。设了 `EIDOLON_STAND_FETCH_ONLY=1` 时只做第一步拉取，只要 uv、不要存储桶，本机体验用本地的静态服务器提供拉到的立绘（见 `docs/agents/deploying.md`「立绘」）。这台机器上要有：
 
 - [uv](https://docs.astral.sh/uv/)（运行 `eidolon` 命令）和 Node.js 22.18 以上（渲染缩略图）。有 `flock`（util-linux，Linux 一般都自带）时脚本会加锁，防止两次同步重叠；没有时（例如 Windows 的 Git Bash）不加锁照常同步。在 Windows 上用 Git Bash 运行 `sh deploy/stand-sync.sh`。
 - Playwright 的 Chromium：在 `frontend/` 里 `npm ci`，再 `npx playwright install --with-deps chromium`（`--with-deps` 会用 apt 装上它要的系统库，需要 root；装过一次即可）。没有显卡也能渲染。
@@ -462,7 +464,40 @@ uv run eidolon reading draft
 
 ### 下线
 
-收到权利方的要求时，清空存储桶：立绘、招呼、开场白、来电卡图、体素小人和第 5 幕的静止图一起下线，通话层退回背景图，落地页退回只有字幕、光、后备海报和印象色方块（静止版式的第 5 幕只有文字），不需要改代码或发版。之后别再运行立绘同步脚本和这条命令。只想下线招呼时，删掉存储桶里 `greetings/` 下的文件即可（落地页同样只显示字幕），开场白是 `call-openers/`；要连字幕一起去掉，删掉 `characters.toml` 里的招呼或开场白再重启后端。
+收到权利方的要求时，清空存储桶：立绘、招呼、开场白、来电卡图、体素小人、第 5 幕的静止图和酒吧的音频一起下线，通话层退回背景图，落地页退回只有字幕、光、后备海报和印象色方块（静止版式的第 5 幕只有文字），酒吧照常静音，不需要改代码或发版。之后别再运行立绘同步脚本和这条命令。只想下线招呼时，删掉存储桶里 `greetings/` 下的文件即可（落地页同样只显示字幕），开场白是 `call-openers/`；要连字幕一起去掉，删掉 `characters.toml` 里的招呼或开场白再重启后端。
+
+## 酒吧的音频
+
+酒吧（玩法里的「VA-283」）的点唱机曲目和音效是 VA-11 HALL-A 原版的 Ogg，版权归 Sukeban Games，不进仓库。仓库里只有一份清单 `characters/bar_audio.json`（59 首曲目和酒吧用到的音效，前端也读它）；音频由部署者从自己电脑上的原版提取目录上传到立绘的存储桶。存储桶里没有时，酒吧照常能玩，只是没有声音。
+
+**什么时候跑**：部署酒吧之前在自己的电脑上跑一次；以后只有清单变了才要再跑。它不在每周的 `deploy/stand-sync.sh` 里。
+
+要有本机的原版提取目录（从自己的游戏里解出来的文件），参数是它下面的 `audio/`：
+
+```sh
+cd backend
+uv run --env-file=../.env eidolon bar upload /path/to/VA11_extract/audio
+```
+
+- 存储桶：和立绘同一个，`EIDOLON_STAND_S3_*`（见「同步素材」）。
+- 清单：角色配置旁边的 `bar_audio.json`，可以用 `--characters` 或 `EIDOLON_CHARACTERS_PATH` 指定角色配置。
+
+它做的事：
+
+- 曲目上传到 `bar/music/<编号>.ogg`，音效上传到 `bar/sfx/<名字>.ogg`，带 `Cache-Control: public, max-age=31536000, immutable`。存储桶里已经有、内容相同的（按 ETag 比较 MD5）不重复上传。
+- 提取目录里找不到的文件报出来，别的照传。
+- 最后写 `bar/manifest.json`（`Cache-Control: no-cache`），只列存储桶里真有的曲目和音效，浏览器按它取，不会去取列了却没上传的文件。
+
+| 退出码 | 含义 | 要做什么 |
+|---|---|---|
+| 0 | 完全成功 | 不用管 |
+| 1 | 配置出错：缺存储桶的设置、清单有误、音频目录不存在，什么都没做 | 看输出里的错误 |
+| 2 | 存储桶出错，没有写 manifest | 和立绘同步的退出码 2 一样排查，重新运行即可，已上传的不会重复上传 |
+| 3 | 有文件找不到，其余的已上传，manifest 已写好 | 看输出里缺哪几个，补齐提取目录后重新运行 |
+
+### 下线
+
+删掉存储桶里 `bar/` 下的全部文件，音频就下线了：酒吧读不到 manifest，跳过选曲、点唱机变灰、不放音效，照常能玩，不需要改代码或发版。之后别再运行这条命令。
 
 ## 配置 OAuth 应用
 
@@ -500,7 +535,7 @@ uv run eidolon reading draft
 
 ## 后台
 
-后台是同一个网站上的 `/admin`，只有管理者能进入（ADR-0013）：看板（各项服务是否正常、用量、估算的花费）、配置（模型、key、限额、单价）和用户（搜索、封禁、单独限额、删除）。管理者在后台里看不到任何用户的对话、记忆和制作人档案，也看不到、改不了某位用户的好感度、礼物、抽奖次数、每日任务和成就，只能看到所有用户合起来的统计；判断模型误判时，可以在配置页给所有现有用户各发一张重置卡（见[配置指南](configuration.md#好感度和礼物)）。其他人看不到入口，访问 `/admin` 和后台接口都得到 404。
+后台是同一个网站上的 `/admin`，只有管理者能进入（ADR-0013）：看板（各项服务是否正常、用量、估算的花费）、配置（模型、key、限额、单价）和用户（搜索、封禁、单独限额、删除）。管理者在后台里看不到任何用户的对话、记忆和制作人档案，也看不到、改不了某位用户的好感度、礼物、抽奖次数和成就，只能看到所有用户合起来的统计；判断模型误判时，可以在配置页给所有现有用户各发一张重置卡（见[配置指南](configuration.md#好感度和礼物)）。其他人看不到入口，访问 `/admin` 和后台接口都得到 404。
 
 ### 开启后台
 
@@ -522,6 +557,16 @@ uv run eidolon reading draft
 5. 刷新设置页，「删除我的全部数据」上方多出「后台」一节，点「进入后台」。
 
 管理者名单只能在 `.env` 里改，后台里不能增减。所有管理者的权限都一样。后台不能封禁或删除管理者（包括自己）；命令行可以封禁管理者，被封禁的管理者也进不了后台（命令行没有删除用户的命令）。
+
+### 只让受邀的人注册
+
+部署给自己和一小群朋友用、不想让找到网址的陌生人也能注册时：
+
+1. `.env` 里设 `EIDOLON_REGISTRATION=invite`，最好部署时就设好。还一个用户都没有时，第一个登录的人不用邀请，所以你自己照常先登录，再按上一节配好管理者名单。没有后台就生成不了邀请链接，`eidolon doctor` 会提醒。
+2. 后台配置页「注册」里点「生成邀请链接」：可以写一句备注（比如发给谁），设可用几次（1 到 100）、多久内有效（1 天、7 天、30 天或不过期）。点「复制链接」发给对方，一人一条或者一条发到群里都行。
+3. 对方打开链接，用 Google 或 GitHub 登录就注册好了，以后直接登录，不再需要链接。没有链接的人登录会被挡下，提示向你要邀请链接（填了 `EIDOLON_CONTACT` 时附上联系方式），服务器不留下他的任何信息。
+
+链接列表里能看到经每条注册了谁；一条链接漏出去了，删掉它立刻失效，再到「用户」里封禁或删除跟着进来的人。注册方式也能在后台「注册」里直接切换，后台改的优先于 `.env`。从谁都能注册切过来时，已经注册的人照常使用。
 
 ### 后台和 `.env` 的关系
 
@@ -629,6 +674,14 @@ db.commit()
 有人新开 issue 时，Issue duplicates workflow 会让 LLM 在以前的 issue（含已关闭的）里找同一个问题，找到就评论列出最多三个（[`scripts/issue_duplicates.py`](../scripts/issue_duplicates.py)）。它只评论，不打标签、不关 issue。LLM 用上面发版本的那三项配置，没配就跳过。
 
 想先试效果：在 Actions 页面选 Issue duplicates，点 Run workflow，填一个 issue 编号，不勾「找到了就评论」，结果只出现在运行日志里。本机看给 LLM 的材料：`python3 scripts/issue_duplicates.py 159 --dry-run`。
+
+### 玩法仓库登记
+
+有人用「玩法仓库登记」模板开 issue 时，Fork showcase workflow 会检查仓库地址：能不能打开、是不是公开、仓库名是不是还叫 eidolon-sc（[`scripts/fork_showcase.py`](../scripts/fork_showcase.py)）。结果写在一条评论里，对方编辑 issue 后会更新这条评论；没通过就打 `needs-info`，通过了就摘掉。
+
+看过对方仓库、觉得可以收录，就给 issue 打上 `accepted` 标签。workflow 会再查一遍，然后把这一条写进 [`docs/community-forks.md`](community-forks.md) 里对应分级的一节，提交到 main，评论并关闭 issue。workflow 自己推的提交不会触发 CI，所以推完会再手动触发一次 main 上的 CI，跑完才能发版本。之后要改简介或下线某一条，直接改这份文档，每一条行末的注释里记着登记 issue 的编号。
+
+本机看会写进文档的那一行：`python3 scripts/fork_showcase.py accept 171 --dry-run`。
 
 ### 镜像的可见性
 
@@ -811,6 +864,7 @@ EIDOLON_BACKUP_WARN_GB=3      # 存储桶里备份的总量超过它就提醒，
 
 ## 排障
 
+- **不知道是哪一项出了问题**：`docker compose -f docker-compose.prod.yml run --rm backend eidolon doctor`。它按 `.env` 逐项试一次各项服务（不用停后端，后端起不来时也能用），说明每一项是连不上、地区不支持、key 不对、余额不足还是模型不对；直连不通时经代理再试，并给出 `EIDOLON_PROXY_SERVICES` 该怎么写。加 `--json` 输出成 JSON。它只查 `.env`，后台改过的项不在其内；生图每张都花钱，不试。
 - **打不开网站、证书申请失败**：`docker compose -f docker-compose.prod.yml logs caddy`。检查域名的 A 记录是否已经生效、80 和 443 端口是否放行。
 - **文字对话正常，语音一直「接通中」然后失败**：先看 `docker compose -f docker-compose.prod.yml logs coturn`。
   - 日志里没有任何来自浏览器的请求：3478 端口（TCP 和 UDP）没有放行。

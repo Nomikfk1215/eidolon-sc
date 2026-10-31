@@ -7,13 +7,12 @@ import binascii
 import json
 import logging
 import math
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.types import Receive, Scope, Send
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,8 +29,9 @@ from eidolon.call import (
     SessionDescription,
     StillPlacing,
 )
-from eidolon.characters import Character, ScriptedLine, in_idol_order
 from eidolon.bailian import transcribe
+from eidolon.characters import Character, ScriptedLine, in_idol_order
+from eidolon.config import FishAudioModel
 from eidolon.database import readable
 from eidolon.engine import ENDED, TurnJudged, shown
 from eidolon.llm import ChatLLM, ChatMessage
@@ -44,8 +44,16 @@ from eidolon.greetings import (
     voxels_path,
 )
 from eidolon.delivery_cues import spoken_by, voiced
-from eidolon.reply_format import SegmentComplete, SegmentDelta, SpeechDelta
-from eidolon.own_keys import BroughtKeys, CallsUnavailable, UnknownService, named_services
+from eidolon.read_aloud import NoVoice, ReadAloudFailed
+from eidolon.reply_format import Segment, SegmentComplete, SegmentDelta, SpeechDelta
+from eidolon.own_keys import (
+    BroughtKeys,
+    CallsUnavailable,
+    NoSpeechSynthesis,
+    OwnKeyFailed,
+    UnknownService,
+    named_services,
+)
 from eidolon.throttle import Throttled
 from eidolon.producer import (
     MAX_FORM_OF_ADDRESS_LENGTH,
@@ -64,9 +72,14 @@ from eidolon.admin_users_api import add_admin_user_routes
 from eidolon.admin_config_api import add_admin_config_routes
 from eidolon.admin_prices_api import add_admin_price_routes
 from eidolon.announcements_api import add_announcement_routes
+from eidolon.bar_api import add_bar_routes
+from eidolon.calendar_api import add_calendar_routes
+from eidolon.cycles_api import add_cycle_routes
 from eidolon.gifts_api import add_gift_routes
+from eidolon.invites_api import add_invite_routes
 from eidolon.photos_api import add_photo_routes
-from eidolon.sessions import UserId, session_middleware
+from eidolon.schedule_api import add_schedule_routes
+from eidolon.sessions import DeviceTimezone, UserId, session_middleware
 from eidolon.sponsor_api import add_sponsor_routes
 from eidolon.stats import add_stats_routes
 from eidolon.service_status import add_service_status_routes
@@ -193,6 +206,16 @@ class TurnInput(BaseModel):
     """Where pages from before brought their own LLM. Transitional, to be deleted once no
     such page is left open: a turn bringing it is refused, asking for a refresh, rather
     than quietly run on the deployer's key and counted."""
+    read_aloud_model: FishAudioModel | None = None
+    """The model of the user's own key for speech synthesis, where their browser keeps one,
+    but not the key: her reply is written with delivery cues as the model it would be read
+    aloud with reads them (GLOSSARY.md「朗读」), the deployer's without it."""
+
+
+class ReadAloudInput(BaseModel):
+    own_keys: OwnKeysInput | None = None
+    """The user's own keys, which their browser keeps: her words are read aloud on theirs
+    for speech synthesis, if it brings it; the others go unused."""
 
 
 class CallRequest(BaseModel):
@@ -262,10 +285,6 @@ class IceCandidates(BaseModel):
 
     pc_id: str
     candidates: list[IceCandidateInput]
-
-
-DeviceTimezone = Annotated[str | None, Header(alias="X-Timezone")]
-"""The time zone the browser detected; the producer profile's own time zone overrides it."""
 
 
 def _stand(character: Character, assets_url: str | None) -> dict | None:
@@ -342,14 +361,19 @@ def create_app(backend: Backend) -> FastAPI:
     def last_shown(last: Recorded | None) -> dict | None:
         """The last thing in a conversation as a list shows it: a message without its
         delivery cues, marked `photo` if it is her reply with a photo she sent (not one being
-        generated or not sent after all), or a conversation event, or her reach-out, shown as
-        her message is, marked `reach_out`; None while it has none."""
+        generated or not sent after all), or a conversation event, with which gift for a gift
+        and since when for her being unwell, or her reach-out, shown as her message is, marked
+        `reach_out`; None while it has none."""
         if last is None:
             return None
         if isinstance(last, ConversationEvent):
+            since = (
+                {"first_day": last.first_day, "days_ago": last.days_ago}
+                if last.kind == "unwell" else {}
+            )
             return {"type": "event", "kind": last.kind, "created_at": last.created_at} | gift_of(
                 last
-            )
+            ) | since
         if isinstance(last, ReachOut):
             said = last.without_cues()
             return {
@@ -424,6 +448,10 @@ def create_app(backend: Backend) -> FastAPI:
     async def unknown_service(_: Request, e: UnknownService) -> JSONResponse:
         return JSONResponse({"detail": str(e)}, status_code=422)
 
+    @app.exception_handler(NoSpeechSynthesis)
+    async def no_speech_synthesis(_: Request, e: NoSpeechSynthesis) -> JSONResponse:
+        return JSONResponse({"detail": str(e)}, status_code=503)
+
     @app.exception_handler(CallNotFound)
     async def call_not_found(_: Request, e: CallNotFound) -> JSONResponse:
         return JSONResponse({"detail": str(e)}, status_code=404)
@@ -444,25 +472,25 @@ def create_app(backend: Backend) -> FastAPI:
     async def call_failed(_: Request, e: CallFailed) -> JSONResponse:
         return JSONResponse({"detail": str(e)}, status_code=500)
 
-    def conversation_or_404(conversation_id: str, user_id: str) -> Conversation:
-        conversation = store.get_conversation(conversation_id)
+    async def conversation_or_404(conversation_id: str, user_id: str) -> Conversation:
+        conversation = await store.get_conversation(conversation_id)
         if conversation is None or conversation.user_id != user_id:
             raise HTTPException(404, "对话不存在")
         if conversation.character_id not in characters:  # removed from the configuration
             raise HTTPException(404, "角色不存在")
         return conversation
 
-    def refuse_if_ended(conversation: Conversation) -> None:
+    async def refuse_if_ended(conversation: Conversation) -> None:
         """A call into a conversation she has ended (GLOSSARY.md「已结束的对话」) is refused,
         before anything is asked or spent; told apart from the limit's 429."""
-        if store.ended(conversation.id) is not None:
+        if await store.ended(conversation.id) is not None:
             raise HTTPException(409, ENDED)
 
-    def conversation_to_call(conversation_id: str, user_id: str) -> Conversation:
+    async def conversation_to_call(conversation_id: str, user_id: str) -> Conversation:
         """The user's conversation a call is to go into, as `conversation_or_404` finds it,
         unless she has ended it (`refuse_if_ended`)."""
-        conversation = conversation_or_404(conversation_id, user_id)
-        refuse_if_ended(conversation)
+        conversation = await conversation_or_404(conversation_id, user_id)
+        await refuse_if_ended(conversation)
         return conversation
 
     @app.get("/api/health")
@@ -482,10 +510,15 @@ def create_app(backend: Backend) -> FastAPI:
     add_dashboard_routes(app, backend)
     add_admin_backup_routes(app, backend)
     add_admin_user_routes(app, backend)
+    add_invite_routes(app, backend)
     add_admin_config_routes(app, backend)
     add_admin_price_routes(app, backend)
     add_announcement_routes(app, backend)
     add_gift_routes(app, backend)
+    add_calendar_routes(app)
+    add_schedule_routes(app, backend)
+    add_cycle_routes(app, backend)
+    add_bar_routes(app, backend)
     add_photo_routes(app, backend)
     add_sponsor_routes(app, backend)
     add_data_package_routes(app, backend)
@@ -493,17 +526,18 @@ def create_app(backend: Backend) -> FastAPI:
     add_service_status_routes(app, backend.service_status)
 
     @app.get("/api/ice-servers")
-    def ice_servers(user_id: UserId, own: str = "", conversation: str | None = None) -> dict:
+    async def ice_servers(
+        user_id: UserId, own: str = "", conversation: str | None = None
+    ) -> dict:
         """What the browser needs before calling, if the call is to bring the user's own
         keys for the services `own` names (as `llm,tts,stt`), but none of the keys; also
         tells it when calls are unavailable, or, for a call into `conversation`, when she
         is in a cooldown or has ended it."""
         character_id = None
         if conversation:
-            into = conversation_or_404(conversation, user_id)
-            refuse_if_ended(into)
+            into = await conversation_to_call(conversation, user_id)
             character_id = into.character_id
-        return calls.ice_servers(user_id, named_services(own), character_id)
+        return await calls.ice_servers(user_id, named_services(own), character_id)
 
     @app.post("/api/offer")
     async def offer(
@@ -518,9 +552,7 @@ def create_app(backend: Backend) -> FastAPI:
             )
         if body.call is None:
             raise HTTPException(422, "缺少要通话的对话")
-        conversation = await asyncio.to_thread(
-            conversation_to_call, body.call.conversation_id, user_id
-        )
+        conversation = await conversation_to_call(body.call.conversation_id, user_id)
         return await calls.start(
             user_id,
             conversation,
@@ -539,14 +571,14 @@ def create_app(backend: Backend) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/profile")
-    def get_profile(user_id: UserId) -> dict:
-        return asdict(store.get_profile(user_id))
+    async def get_profile(user_id: UserId) -> dict:
+        return asdict(await store.get_profile(user_id))
 
     @app.put("/api/profile")
-    def update_profile(body: ProfileInput, user_id: UserId) -> dict:
+    async def update_profile(body: ProfileInput, user_id: UserId) -> dict:
         birthday = body.birthday and Birthday(body.birthday.month, body.birthday.day)
         profile = ProducerProfile(body.form_of_address, body.gender, body.timezone, birthday)
-        store.save_profile(user_id, profile)
+        await store.save_profile(user_id, profile)
         return asdict(profile)
 
     @app.get("/api/characters")
@@ -562,9 +594,11 @@ def create_app(backend: Backend) -> FastAPI:
                 "avatar_url": f"/api/characters/{c.id}/avatar" if c.avatar else None,
                 "scsp_avatar_url": f"/api/characters/{c.id}/scsp-avatar" if c.scsp_avatar else None,
                 "color": c.color,
+                "birthday": f"{c.birthday.month:02}-{c.birthday.day:02}",
                 "background_url": f"/api/characters/{c.id}/background" if c.background else None,
                 "stand": _stand(c, backend.settings.stand_assets_url),
                 "idol_id": c.idol_id,
+                "short_name": c.short_name,
                 "name_zh": c.name_zh,
                 "name_kana": c.name_kana,
                 "name_romaji": c.name_romaji,
@@ -610,12 +644,12 @@ def create_app(backend: Backend) -> FastAPI:
         return _picture(character.background, request)
 
     @app.get("/api/characters/{character_id}/affinity")
-    def affinity(character_id: str, user_id: UserId) -> dict | None:
+    async def affinity(character_id: str, user_id: UserId) -> dict | None:
         """Her affinity with the user now, by tier only, and when the cooldown ends if she
         is in one; null while affinity is off."""
         if character_id not in characters:
             raise HTTPException(404, "角色不存在")
-        status = backend.affinities.status(user_id, character_id)
+        status = await backend.affinities.status(user_id, character_id)
         return status and status.shown()
 
     @app.get("/api/memories")
@@ -644,10 +678,10 @@ def create_app(backend: Backend) -> FastAPI:
         await memory.clear(user_id)
 
     @app.post("/api/conversations", status_code=201)
-    def create_conversation(body: NewConversation, user_id: UserId) -> dict:
+    async def create_conversation(body: NewConversation, user_id: UserId) -> dict:
         if body.character_id not in characters:
             raise HTTPException(404, "角色不存在")
-        return asdict(store.create_conversation(user_id, body.character_id))
+        return asdict(await store.create_conversation(user_id, body.character_id))
 
     @app.get("/api/conversations")
     async def list_conversations(character_id: str, user_id: UserId) -> list[dict]:
@@ -655,14 +689,14 @@ def create_app(backend: Backend) -> FastAPI:
         with its title, null if it has none, the last thing in it, as the conversation list
         shows it, and whether she has ended it. Those being named are waited for a while."""
         await titles.settle(user_id)
-        listed = await asyncio.to_thread(store.list_conversations, user_id, character_id)
+        listed = await store.list_conversations(user_id, character_id)
         return [
             asdict(c) | {"last_message": last_shown(last), "ended": ended}
             for c, last, ended in listed
         ]
 
     @app.get("/api/conversations/latest")
-    def latest_conversations(user_id: UserId) -> list[dict]:
+    async def latest_conversations(user_id: UserId) -> list[dict]:
         """For the conversation list: each character's newest conversation with the user, the
         last thing in it, a message, a conversation event or a reach-out (null while it has
         none), and whether it has a reach-out the user has not seen, in one request."""
@@ -674,34 +708,35 @@ def create_app(backend: Backend) -> FastAPI:
                 "last_message": last_shown(last),
                 "unseen_reach_out": unseen,
             }
-            for c, last, unseen in store.latest_conversations(user_id)
+            for c, last, unseen in await store.latest_conversations(user_id)
         ]
 
     @app.delete("/api/conversations/{conversation_id}", status_code=204)
-    def delete_conversation(conversation_id: str, user_id: UserId) -> None:
+    async def delete_conversation(conversation_id: str, user_id: UserId) -> None:
         """Delete a past conversation (GLOSSARY.md「历史对话」), for good; her current one is
         not deleted (409)."""
+        conversation = await conversation_or_404(conversation_id, user_id)
         try:
-            store.delete_conversation(conversation_or_404(conversation_id, user_id))
+            await store.delete_conversation(conversation)
         except IsCurrent:
             raise HTTPException(409, "当前对话不能删除") from None
 
     @app.get("/api/conversations/{conversation_id}/messages")
-    def list_messages(conversation_id: str, user_id: UserId) -> list[dict]:
+    async def list_messages(conversation_id: str, user_id: UserId) -> list[dict]:
         """The conversation's record: its messages, conversation events and reach-outs, in
         order. The user reads it: its reach-outs are seen from now on."""
-        conversation = conversation_or_404(conversation_id, user_id)
-        entries = [recorded(entry) for entry in store.read_by_user(conversation.id)]
-        with_images = store.user_image_message_ids(conversation.id)
+        conversation = await conversation_or_404(conversation_id, user_id)
+        entries = [recorded(entry) for entry in await store.read_by_user(conversation.id)]
+        with_images = await store.user_image_message_ids(conversation.id)
         for entry in entries:  # a message the user sent a picture with says so, for the page
             if entry.get("id") in with_images:
                 entry["image"] = True
         return entries
 
     @app.get("/api/messages/{message_id}/image")
-    def message_image(message_id: int, user_id: UserId) -> Response:
+    async def message_image(message_id: int, user_id: UserId) -> Response:
         """The picture the user sent with that message; 404 for anyone else's."""
-        found = store.user_image(message_id, user_id)
+        found = await store.user_image(message_id, user_id)
         if found is None:
             raise HTTPException(404, "没有这张图片")
         data, mime = found
@@ -714,10 +749,10 @@ def create_app(backend: Backend) -> FastAPI:
         """Her reply said aloud: voiced the first time the user asks for it, on the
         deployer's voice, and kept with the message so asking again voices nothing; 404 for
         anyone else's."""
-        speaking = store.message_to_speak(message_id, user_id)
+        speaking = await store.message_to_speak(message_id, user_id)
         if speaking is None:
             raise HTTPException(404, "没有这条消息")
-        kept = store.message_speech(message_id)
+        kept = await store.message_speech(message_id)
         if kept is not None:
             data, mime = kept
             return Response(
@@ -738,7 +773,7 @@ def create_app(backend: Backend) -> FastAPI:
             data = await voice_line(voice, said, voice_id)
         except Exception as e:  # voiced or not, the reply itself stays
             raise HTTPException(502, f"语音合成失败了：{e}") from e
-        store.keep_message_speech(message_id, conversation_id, "audio/mpeg", data)
+        await store.keep_message_speech(message_id, conversation_id, "audio/mpeg", data)
         return Response(
             data, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=31536000"}
         )
@@ -813,13 +848,13 @@ def create_app(backend: Backend) -> FastAPI:
         return {"text": heard}
 
     @app.post("/api/conversations/{conversation_id}/turns")
-    def text_turn(
+    async def text_turn(
         conversation_id: str,
         body: TurnInput,
         user_id: UserId,
         device_timezone: DeviceTimezone = None,
     ) -> StreamingResponse:
-        conversation = conversation_or_404(conversation_id, user_id)
+        conversation = await conversation_or_404(conversation_id, user_id)
         if body.own_llm is not None:  # transitional: see `TurnInput.own_llm`
             raise HTTPException(422, "页面已经更新，请刷新后再发")
         brought = body.own_keys.brought() if body.own_keys else BroughtKeys()
@@ -827,14 +862,20 @@ def create_app(backend: Backend) -> FastAPI:
             # A deployment still being set up (EIDOLON_CHAT_LLM_OPTIONAL=1) has no model of
             # its own: only a turn bringing its own LLM can run, and the rest are told why.
             raise HTTPException(503, NO_CHAT_MODEL)
-        admission = admissions.turn(user_id, conversation.character_id, brought)
+        # Cancelled meanwhile, what is let in never runs, so is settled as left.
+        admission = await admissions.admitted(
+            admissions.turn(user_id, conversation.character_id, brought),
+            lambda let_in: TurnOutcome(let_in.recording, let_in.settle).over(
+                cut_short_by_failure=False
+            ),
+        )
         outcome = TurnOutcome(admission.recording, admission.settle)
         picture = _decode_turn_image(body.image)
 
         async def events() -> AsyncIterator[str]:
             # Closed as the response is, so that the turn is no longer under way once the user
             # has gone (`Store.taking_turn`).
-            with outcome.running():
+            async with outcome.running():
                 note = None
                 is_her: bool | None = None
                 other: str | None = None
@@ -861,7 +902,9 @@ def create_app(backend: Backend) -> FastAPI:
                         log.exception("could not describe the picture in conversation %s", conversation.id)
                 async with aclosing(engine.turn(
                     conversation, body.text, admission.llms, device_timezone,
-                    own_image=brought.image, image=picture, picture_note=note,
+                    voiced_by=backend.own_keys.read_aloud_model(body.read_aloud_model),
+                    own_image=brought.image,
+                    image=picture, picture_note=note,
                     picture_is_her=is_her, picture_other=other,
                 )) as turn:
                     async for event in turn:
@@ -874,6 +917,47 @@ def create_app(backend: Backend) -> FastAPI:
 
         return _TurnResponse(events(), lambda: outcome.over(cut_short_by_failure=False))
 
+    async def read_aloud(
+        conversation: Conversation, segments: list[Segment] | None, body: ReadAloudInput,
+        user_id: str,
+    ) -> Response:
+        """Her `segments` read aloud (GLOSSARY.md「朗读」), as mp3 for the user's browser alone:
+        404 without them; 503 with no key for speech synthesis, or her voice not configured;
+        429 with no read-alouds left this hour; 502 if Fish Audio failed, with `code` "own_key" if on the user's own key,
+        saying why."""
+        if segments is None:
+            raise HTTPException(404, "没有这句话")
+        brought = body.own_keys.brought() if body.own_keys else BroughtKeys()
+        voice_id = characters[conversation.character_id].voice_id
+        try:
+            audio = await backend.read_aloud.voice(user_id, voice_id, segments, brought)
+        except OwnKeyFailed as e:
+            return JSONResponse({"detail": e.message, "code": "own_key"}, status_code=502)
+        except ReadAloudFailed as e:
+            return JSONResponse({"detail": str(e)}, status_code=502)
+        except NoVoice as e:
+            return JSONResponse({"detail": str(e)}, status_code=503)
+        return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/conversations/{conversation_id}/messages/{message_id}/read-aloud")
+    async def read_reply_aloud(
+        conversation_id: str, message_id: int, body: ReadAloudInput, user_id: UserId
+    ) -> Response:
+        """Her reply read aloud, in any of the user's conversations with her, past and ended
+        ones too, cooling down or not: it is no turn."""
+        conversation = await conversation_or_404(conversation_id, user_id)
+        segments = await store.reply_said(conversation.id, message_id)
+        return await read_aloud(conversation, segments, body, user_id)
+
+    @app.post("/api/conversations/{conversation_id}/reach-outs/{reach_out_id}/read-aloud")
+    async def read_reach_out_aloud(
+        conversation_id: str, reach_out_id: int, body: ReadAloudInput, user_id: UserId
+    ) -> Response:
+        """Her reach-out read aloud, as her replies are."""
+        conversation = await conversation_or_404(conversation_id, user_id)
+        segments = await store.reach_out_said(conversation.id, reach_out_id)
+        return await read_aloud(conversation, segments, body, user_id)
+
     return app
 
 
@@ -881,7 +965,7 @@ class _TurnResponse(StreamingResponse):
     """A text turn's events, `end` called once they are sent or the page is gone, even
     gone before they began, when the stream of them never runs."""
 
-    def __init__(self, events: AsyncIterator[str], end: Callable[[], None]) -> None:
+    def __init__(self, events: AsyncIterator[str], end: Callable[[], Awaitable[None]]) -> None:
         super().__init__(
             events,
             media_type="text/event-stream",
@@ -893,7 +977,7 @@ class _TurnResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            self._end()
+            await self._end()
 
 
 def _sse(payload: dict) -> str:

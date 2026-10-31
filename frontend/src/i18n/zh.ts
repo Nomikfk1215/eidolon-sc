@@ -32,9 +32,9 @@ export const zh = {
     conversations: "对话",
     /** 「对话」图标上有点时读屏读的名字：列表里有一行有没看过的搭话。 */
     conversationsUnseen: "对话，有没看过的搭话",
-    gifts: "礼物",
-    /** 「礼物」图标上有点时读屏读的名字：有新到的抽奖次数。 */
-    giftsRewarded: "礼物，有新到的抽奖次数",
+    play: "玩法",
+    /** 「玩法」图标上有点时读屏读的名字：有新到的抽奖次数。 */
+    playRewarded: "玩法，有新到的抽奖次数",
     settings: "设置",
   },
   /** 落地页的链接贴到聊天软件、社交网站时预览卡片上的文字（Open Graph、Twitter 卡片）。页面上不显示，不进字体子集。 */
@@ -167,6 +167,8 @@ export const zh = {
     /** 她有没看过的成就解锁时，更多菜单键的读屏名字。 */
     menuUnseen: "更多操作，有新解锁的成就",
     newConversation: "新对话",
+    /** 更多菜单里去日历子页、只看她的那一项（日程开着时才有）。 */
+    herSchedule: "她的日程",
     call: (name: string) => `和${name}通话`,
     callTooltip: "语音通话",
     placeholder: "用中文或日语说点什么",
@@ -193,6 +195,13 @@ export const zh = {
       hung_up: (name: string) => `${name}挂断了电话`,
       gift: (name: string, gift: string) => `你送给${name}一份${gift}`,
       ended: (name: string) => `${name}结束了对话`,
+      /** 她经期里用户第一次来时记下的（只给用户看）：`since` 是 `unwellSince` 拼出的那几个字。 */
+      unwell: (name: string, since: string) => `${name}好像从${since}起就不太舒服`,
+    },
+    /** 她不太舒服从哪天起：早 0、1、2 天写词，再早写日期（两边留空格，「从 10月21日 起」）。 */
+    unwellSince: {
+      days: ["今天", "昨天", "前天"],
+      date: (month: number, day: number) => ` ${month}月${day}日 `,
     },
     /** 她结束了对话（GLOSSARY.md「已结束的对话」）时换掉输入栏的结束卡：那句话同对话事件（`events.ended`），不写原因；
      * 她在冷却中时换成 `cooling`，写上解除时刻。 */
@@ -249,6 +258,17 @@ export const zh = {
       toOwnKeys: "去设置自带密钥",
       /** 照片用完时她那条回复后面的胶囊；`time` 是 HH:MM。 */
       usedUp: (time: string) => `这一小时的照片用完了，${time} 以后可以再要`,
+    },
+    /** 她的一条话的菜单和下面的语音条（GLOSSARY.md「朗读」）。没合成出来时那一行写后端给的原因。 */
+    readAloud: {
+      menu: "朗读",
+      voicing: "正在合成语音",
+      play: "播放",
+      pause: "暂停",
+      retry: "再试一次",
+      toOwnKeys: "去设置自带密钥",
+      /** 这一小时的朗读次数用完了；`time` 是 HH:MM，按制作人的时区。 */
+      usedUp: (time: string) => `这一小时的朗读次数用完了，${time} 以后可以再听`,
     },
     hearing: "正在听你说",
     loading: "正在打开对话",
@@ -343,6 +363,11 @@ export const zh = {
     speakFreely: "直接说话就好",
     repliesInText: "她会用文字回复",
     hearing: (text: string) => `你：${text}…`,
+    /** 通话里打出去的话，她开口前留在台词卡底部。 */
+    typed: (text: string) => `你：${text}`,
+    /** 底栏的打字键；点了底栏换成输入栏。 */
+    type: "打字",
+    closeTyping: "收起输入栏",
     micMute: "麦克风静音",
     micUnmute: "取消麦克风静音",
     hangUp: "挂断",
@@ -567,13 +592,14 @@ export const zh = {
   settings: {
     title: "设置",
     loading: "正在读取…",
-    /** 设置一级的十类，也是各自二级页首的名字。「登录与数据」不叫「账号」：GLOSSARY 把它列为避免的说法。 */
+    /** 设置一级的各类，也是各自二级页首的名字。「登录与数据」不叫「账号」：GLOSSARY 把它列为避免的说法。 */
     categories: {
       profile: "档案",
       memories: "记忆",
       stats: "统计",
       call: "通话",
       "reach-outs": "搭话",
+      cycles: "周期",
       appearance: "外观",
       "own-keys": "自带密钥",
       "sign-in": "登录与数据",
@@ -591,8 +617,9 @@ export const zh = {
       phoneTextureOff: "电话质感关",
       scspAvatarsOn: "SCSP 头像开",
       scspAvatarsOff: "SCSP 头像关",
-      reachOutsOn: "开",
-      reachOutsOff: "关",
+      /** 搭话、周期这类只有一个开关的。 */
+      switchOn: "开",
+      switchOff: "关",
       ownKeysNone: "全部用部署者的服务",
       ownKeys: (services: string) => `已填 ${services}`,
     },
@@ -698,6 +725,10 @@ export const zh = {
     },
     reachOuts: {
       on: "她们会主动搭话",
+    },
+    cycles: {
+      on: "她们的周期",
+      hint: "关掉后她不受周期影响，玩法里不显示周期；记录会留着。",
     },
     appearance: {
       scspAvatars: "SCSP 头像",
@@ -830,6 +861,7 @@ export const zh = {
         photos: "照片",
         memories: "记忆",
         profile: "制作人档案",
+        cycles: "周期记录",
       },
       export: "导出",
       importTitle: "导入",
@@ -847,12 +879,15 @@ export const zh = {
         conversations: (n: number) => `${n} 段对话`,
         photos: (n: number) => `${n} 张照片`,
         memories: (n: number) => `${n} 条记忆`,
+        cycles: (n: number) => `${n} 条周期记录`,
       },
       separator: "、",
       nothingNew: "没有新的内容要导入。",
       /** 「跳过了和月岡恋鐘的 2 段、櫻木真乃的 1 段对话，这里没有她们。」 */
       skipped: (parts: string, many: boolean) => `跳过了和${parts}对话，这里没有${many ? "她们" : "她"}。`,
       skippedPart: (name: string, n: number) => `${name}的 ${n} 段`,
+      /** 「跳过了 2 条周期记录。」：角色不在、天数不对、在未来，或和已有的重叠。 */
+      skippedCycles: (n: number) => `跳过了 ${n} 条周期记录。`,
       failures: {
         broken: "这不是一个能用的数据包",
         too_new: "这个数据包来自更新的版本，请部署者升级后再导入",
@@ -1106,13 +1141,25 @@ export const zh = {
         title: "搭话",
         tiles: { succeeded: "成功", failed: "失败", answered: "被回了" },
       },
-      /** 「好感度」里的「每日任务和成就」一小节：范围内每一项各做完几次，解锁了几个成就阶段、发出几次抽奖、几张重置卡。 */
-      tasksAndAchievements: {
-        title: "每日任务和成就",
+      /** 「用量」里的「酒吧」一小节：范围内光顾了几次（不算被拒的）、玩完几次、失败几次。 */
+      bar: {
+        title: "酒吧",
+        tiles: { visits: "光顾", done: "玩完", failed: "失败" },
+      },
+      /** 「好感度」里的「日程」一小节：本周（北京时间）排了日程的人数，不跟时间范围走。 */
+      schedule: {
+        title: "日程",
+        tiles: { scheduled: "本周排了日程的人数" },
+      },
+      /** 「好感度」里的「周期」一小节：现在库里记过周期的用户数，不跟时间范围走。 */
+      cycles: {
+        title: "周期",
+        tiles: { recorded: "记过周期的用户数" },
+      },
+      /** 「好感度」里的「成就」一小节：范围内解锁了几个成就阶段、发出几次抽奖、几张重置卡。 */
+      achievements: {
+        title: "成就",
         tiles: {
-          one_turn: "一个回合",
-          one_gift: "送一件礼",
-          ten_turns: "十个回合",
           stages: "解锁的阶段",
           draws: "发出的抽奖次数",
           reset_cards: "重置卡",
@@ -1247,6 +1294,8 @@ export const zh = {
         noEmail: "没有邮箱",
         id: "用户 ID",
         createdAt: "注册时间",
+        /** 经邀请链接注册的用户多一项，值是那条链接的备注。 */
+        invite: "经邀请链接注册",
         lastActive: "最后活跃",
         bannedAt: "封禁于",
         banNote: "封禁备注",
@@ -1271,6 +1320,10 @@ export const zh = {
         summary: (turns: string, calls: string) => `回合 ${turns} · 通话 ${calls}`,
         /** 单独设了照片数时接在后面。 */
         withPhotos: (summary: string, photos: string) => `${summary} · 照片 ${photos}`,
+        /** 单独设了光顾次数时接在后面（在照片之后）。 */
+        withVisits: (summary: string, visits: string) => `${summary} · 光顾 ${visits}`,
+        /** 单独设了朗读次数时接在后面（在光顾之后）。 */
+        withReadAlouds: (summary: string, readAlouds: string) => `${summary} · 朗读 ${readAlouds}`,
         updatedAt: "设定于",
         set: "设定单独限额",
         edit: "修改单独限额",
@@ -1278,10 +1331,12 @@ export const zh = {
       },
       limitsDialog: {
         title: (name: string) => `${name} 的单独限额`,
-        hint: "只对这位用户生效，保存后从他的下一个回合、下一次通话起按这里的数字计算；没有单独设定的一项跟随全站。不计入限额的回合和通话照常放行。单次通话的时长和回合上限对所有人都一样，不能单独设。",
+        hint: "只对这位用户生效，保存后从他的下一个回合、下一次通话、光顾或朗读起按这里的数字计算；没有单独设定的一项跟随全站。不计入限额的回合、通话、光顾和朗读照常放行。单次通话的时长和回合上限对所有人都一样，不能单独设。",
         turns: "每小时的回合数",
         calls: "每小时的通话次数",
         photos: "每小时的照片数",
+        visits: "每小时的光顾次数",
+        readAlouds: "每小时的朗读次数",
         choices: { default: "跟随全站", number: "设定次数", unlimited: "不限", ownKeys: "只能用自带密钥" },
         /** 「只能用自带密钥」是什么意思：只放行不计入限额的（GLOSSARY.md「免限额密钥」）。通话的按配置页「限额」
          * 里现在的免限额密钥点名，经 `sayServices` 拼上服务名；读不到配置时用 `callsOwnKeysHintUnknown`。 */
@@ -1289,6 +1344,8 @@ export const zh = {
         callsOwnKeysHint: (services: string) => `只放行带上自己的${services}的通话；全站的免限额密钥改了，这里跟着变。`,
         callsOwnKeysHintUnknown: "只放行不计入限额的通话。",
         photosOwnKeysHint: "只发用自带生图生成的照片。",
+        visitsOwnKeysHint: "只放行用自带 LLM 的光顾。",
+        readAloudsOwnKeysHint: "只用自带语音合成的 key 朗读。",
         /** 「跟随全站」带上全站现在的数字，不用去配置页查：「跟随全站（60 次）」。 */
         defaultIs: (site: string) => `跟随全站（${site}）`,
         siteCount: (n: number) => (n === 0 ? "不限" : `${n} 次`),
@@ -1325,6 +1382,7 @@ export const zh = {
         network: "网络",
         status: "服务状态",
         limits: "限额与玩法",
+        registration: "注册",
         sponsor: "赞赏",
         prices: "单价",
         read_only: "只读",
@@ -1372,11 +1430,23 @@ export const zh = {
         },
         affinity: {
           title: "好感度和礼物",
-          hint: "需要判断模型：每个回合由它判断制作人的话让好感度怎样变化。关掉时不判断、不显示，冷却也不拦人，每日任务和成就不出现也不记进度；已有的好感度原样留着，再打开接着用。保存后从下一个回合起生效，进行中的通话也是。",
+          hint: "需要判断模型：每个回合由它判断制作人的话让好感度怎样变化。关掉时不判断、不显示，冷却也不拦人，成就不出现也不记进度；已有的好感度原样留着，再打开接着用。保存后从下一个回合起生效，进行中的通话也是。",
         },
         reach_outs: {
           title: "搭话",
           hint: "打开后，用户一阵子没来，角色会在当前对话里先说几句。用的是部署者的对话模型，花费由部署者出，自带 LLM 的用户也一样。保存后下一分钟起生效。",
+        },
+        schedule: {
+          title: "日程",
+          hint: "打开后，日历里每周发布一批工作，用户排进角色的一周，角色知道并说起；排给她的工作做完了，好感度上升（好感度关着时不加）。关掉时日历只有月视图，角色不再说起日程，已排的原样留着，再打开接着用。保存后从下一次读取起生效。",
+        },
+        cycles: {
+          title: "周期",
+          hint: "打开后，每位用户的每位角色各有一个周期，经前、经期她的言行、好感度、挂断、暖的礼物和对话事件跟着变；用户可以在设置里自己关。关掉时周期照走，再打开她还在本来的位置。保存后从下一个回合、下一次搭话起生效。",
+        },
+        bar: {
+          title: "酒吧",
+          hint: "打开后，角色来 VA-283 光顾，制作人照她的点单调饮品。用的是对话模型，自带 LLM 的用户用他们自己的。关掉时进不了门，进行中的光顾照常走完。保存后从下一次进门起生效。",
         },
         proxy: {
           title: "网络代理",
@@ -1385,6 +1455,10 @@ export const zh = {
         service_status: {
           title: "服务状态",
           hint: "对话列表铃铛旁边给用户看各项服务正不正常：按统计时段里用部署者 key 的调用算出错率，时段里没有调用的，后台用最小的真实请求试一下（生图不试）。一项都不显示时用户那边没有按钮。保存后立刻生效。",
+        },
+        registration: {
+          title: "注册方式",
+          hint: "只让受邀的人注册时，新用户要从下面的邀请链接登录；已经注册的用户和管理者照常登录。保存后立刻生效。",
         },
       },
       status: {
@@ -1422,6 +1496,8 @@ export const zh = {
         turns_per_hour: "每小时回合数",
         calls_per_hour: "每小时通话次数",
         photos_per_hour: "每小时照片数",
+        visits_per_hour: "每小时光顾次数",
+        read_alouds_per_hour: "每小时朗读次数",
         call_minutes: "单次通话的时长上限（分钟）",
         turns_per_call: "单次通话的回合上限",
         concurrent_calls: "同时进行的通话数上限",
@@ -1439,6 +1515,9 @@ export const zh = {
       itemFields: {
         chat_llm: { reasoning_effort: "文字的思考强度" },
         reach_outs: { enabled: "搭话", per_day: "每位用户每天最多几次" },
+        schedule: { enabled: "日程" },
+        cycles: { enabled: "周期" },
+        bar: { enabled: "酒吧" },
         proxy: {
           enabled: "代理",
           url: "代理地址",
@@ -1467,6 +1546,7 @@ export const zh = {
           rerank: "显示「重排」",
           image: "显示「照片」（生图）",
         },
+        registration: { mode: "谁能注册" },
       } as Partial<Record<string, Record<string, string>>>,
       formHints: {
         reasoning_effort: `${reasoningEffortHints.effort}选「高」及以上时，max_tokens 留空或设宽裕一些，思考也算在上限里。`,
@@ -1520,6 +1600,8 @@ export const zh = {
         cloudflare: "Cloudflare Workers AI",
       } as Record<string, string>,
       regions: { beijing: "北京", singapore: "新加坡" } as Record<string, string>,
+      /** 注册方式（GLOSSARY.md「注册方式」）的两种。 */
+      registrations: { open: "谁都能注册", invite: "只让受邀的人注册" } as Record<string, string>,
       imageFormats: { novelai: "NovelAI 官方格式", openai: "OpenAI 图像格式" } as Record<string, string>,
       imageModels: {
         "nai-diffusion-5-curated": "V5 Curated",
@@ -1552,6 +1634,8 @@ export const zh = {
         } as Record<string, string>,
         set: "已设置",
         unset: "未设置",
+        /** 开发登录打开、没设管理者名单时，人人都是管理者。 */
+        everyone: "所有人（开发登录）",
       },
       protocols: {
         "chat-completions": "OpenAI 兼容（Chat Completions）",
@@ -1610,6 +1694,41 @@ export const zh = {
           title: "清除赞赏？",
           description: "开关会关掉，收款码会删除，用户不再看到「赞赏」。",
           confirm: "清除",
+        },
+      },
+      /** 「注册」标签里注册方式下面的那张卡（GLOSSARY.md「邀请链接」）。不是 .env 里的配置。 */
+      invites: {
+        title: "邀请链接",
+        hint: "把链接发给想邀请的人，对方打开后登录就注册好了。",
+        loading: "正在读取…",
+        create: "生成邀请链接",
+        empty: "还没有邀请链接。",
+        noNote: "没有备注",
+        used: (used: number, max: number) => `已用 ${used} / ${max} 次`,
+        expiresAt: "到期",
+        neverExpires: "不过期",
+        states: { used_up: "已用完", expired: "已过期" } as Record<string, string>,
+        invited: "经它注册：",
+        nameSeparator: "、",
+        copy: "复制链接",
+        copied: "已复制",
+        copyFailed: (link: string) => `没能复制，请手动复制：${link}`,
+        created: "已生成邀请链接。",
+        delete: "删除",
+        form: {
+          note: "备注",
+          noteHint: "比如发给谁，只有管理者看得到。",
+          maxUses: "可用次数",
+          lifetime: "有效期",
+          lifetimes: { "1": "1 天", "7": "7 天", "30": "30 天", never: "不过期" } as Record<string, string>,
+          submit: "生成",
+          submitting: "正在生成…",
+          maxUsesProblem: (max: number) => `可用次数要在 1 到 ${max} 之间。`,
+        },
+        dialog: {
+          title: "删除这条邀请链接？",
+          description: "链接会立刻失效；经它注册的用户照常使用。",
+          confirm: "删除",
         },
       },
     },
@@ -1760,11 +1879,355 @@ export const zh = {
       },
     },
   },
-  /** 礼物页（GLOSSARY.md「礼物」「抽奖」，DESIGN.md「礼物页」）。 */
+  /** 玩法页（GLOSSARY.md「玩法」）：导航里的第一级，每张卡进一个子页（礼物、成就、日历）。 */
+  play: {
+    title: "玩法",
+    /** 子页读到状态之前。 */
+    loading: "正在读取",
+    /** 卡片状态那一行里各段之间。 */
+    separator: " · ",
+    /** 好感度和礼物没开放时：礼物、成就两个子页页首下面是这一句（第一级只剩「日历」卡）。 */
+    closed: {
+      title: "玩法暂时没有开放",
+      description: "这里还没有开放好感度和礼物。已经有的礼物会留着，开放后照常能送。",
+    },
+    cards: {
+      gifts: {
+        name: "礼物",
+        draws: (n: number) => `还有 ${n} 次抽奖`,
+        backpack: (items: number) => `背包 ${items} 件`,
+        resetCards: (n: number) => `重置卡 ${n} 张`,
+        /** 名字旁的点，读屏读的名字：有新到的抽奖次数。 */
+        dot: "有新到的抽奖次数",
+      },
+      achievements: {
+        name: "成就",
+        /** 平时：合起来的成就一共解锁了几个阶段。 */
+        unlocked: (n: number) => `已解锁 ${n} 个阶段`,
+        /** 有这台设备上还没看过的解锁时，换成这一句。 */
+        unseen: (n: number) => `${n} 个新解锁`,
+        /** 名字旁的点，读屏读的名字：有新解锁的成就。 */
+        dot: "有新解锁的成就",
+      },
+      calendar: {
+        name: "日历",
+        /** 今天及以后最近的一件：「下一个：10月27日 樋口円香的生日」；今天就有时「今天：…」。 */
+        next: (date: string, what: string) => `下一个：${date} ${what}`,
+        today: (what: string) => `今天：${what}`,
+        birthday: (name: string) => `${name}的生日`,
+        /** 本周还有工作待排时，状态最前面一段。 */
+        pending: (n: number) => `本周还有 ${n} 项工作待排`,
+      },
+      cycles: {
+        name: "周期",
+        /** 一位都没记过时。 */
+        empty: "凭她的言行记下她的经期，这里替你推算。",
+        /** 「记过 3 位 · 最近 円香 10月31日」：推算的下一次经期离今天最近的那位。 */
+        status: (n: number, name: string, date: string) => `记过 ${n} 位 · 最近 ${name} ${date}`,
+      },
+      bar: {
+        name: "VA-283",
+        /** 今天还没玩完过光顾，玩完有奖励。 */
+        rewardToday: "今天第一次光顾有奖励",
+        /** 好感度和礼物开着，今天已经玩完过。 */
+        rewarded: "今天的奖励领过了",
+        /** 好感度和礼物关着：光顾什么都不给。 */
+        unrewarded: "调一杯给来店的她",
+      },
+    },
+    /** 周期子页（`/play/cycles`，GLOSSARY.md「周期」「推算」）。 */
+    cycles: {
+      lead: "凭她的言行记下她的经期，这里替你推算。",
+      /** 搜索框右边的筛选：电脑上弹出框、手机上抽屉，单选。 */
+      filter: {
+        label: "筛选",
+        only: (what: string) => `筛选，只看${what}`,
+        title: "头像条里显示谁",
+        all: "全部",
+        recorded: "记过的",
+        now: "推算在经前、经期的",
+        unrecorded: "还没记过的",
+        count: (n: number) => `${n} 位`,
+      },
+      /** 她那一块顶上的一句话。 */
+      line: {
+        none: "还没记过。记下一次，这里就开始推算。",
+        recorded: (day: number) => `经期第 ${day} 天`,
+        estimated: "推算在经期",
+        premenstrual: (date: string) => `推算在经前 · ${date} 来`,
+        late: (date: string) => `推算 ${date} 来，还没记下`,
+        next: (date: string, days: number, from: string) => `下次经期推算在 ${date}（还有 ${days} 天），经前从 ${from} 起。`,
+      },
+      /** 月历上的三种记号，也是图例和点中那一天的说明。 */
+      kinds: { recorded: "记下的经期", estimated: "推算的经期", premenstrual: "推算的经前" },
+      /** 电脑上每段经前第一天的格子底部。 */
+      premenstrualMark: "经前",
+      /** 点中那一天的一条。 */
+      day: {
+        prompt: "点一天来记下她这次经期的第一天。",
+        first: "这天是第一天",
+        future: "不能记未来",
+        edit: "改这次",
+      },
+      /** 右栏的三行。 */
+      stats: {
+        cycle: "周期",
+        period: "经期",
+        offBy: "过去的估算平均差",
+        days: (n: string | number) => `${n} 天`,
+        rough: "粗略估计",
+        compareLater: "再记一次就能比较",
+      },
+      /** 推算变淡的原因，每种一句。 */
+      reasons: {
+        once: "再记一次就能按她自己的周期推算。",
+        irregular: "她的周期长短不一，估算只作参考。",
+        /** 「长短不一」那句末尾的链接，展开讲解的「青春期」。 */
+        irregularLink: "见「青春期」",
+        missed: "中间可能漏记了一次。",
+        late: "这次可能还没记下。",
+      },
+      /** 右栏的「记过的经期」，新的在上。 */
+      records: {
+        title: "记过的经期",
+        row: (days: number, gap: number | null) => (gap === null ? `${days} 天` : `${days} 天 · 隔 ${gap} 天`),
+        edit: (date: string) => `改${date}这次`,
+        all: (n: number) => `展开全部 ${n} 次`,
+        less: "收起",
+      },
+      /** 最下面通栏的讲解七块（正文在 `lib/cycleGuide`）。 */
+      guide: {
+        title: "讲解",
+        diagram: {
+          label: "以 28 天为例：经期第 1–5 天，易孕期第 10–16 天，排卵日第 15 天",
+          period: "经期 第 1–5 天",
+          fertile: "易孕期 第 10–16 天",
+          ovulation: "排卵日 第 15 天",
+          caption: "以 28 天为例",
+        },
+      },
+      /** 页面最后一行。 */
+      disclaimer: "推算只是估计，不是医疗建议，不能用来避孕；身体不适请看医生。",
+      /** 记一次、改一次的弹窗。 */
+      dialog: {
+        title: (name: string) => `记${name}的一次经期`,
+        firstDay: "第一天",
+        days: "天数",
+        fewer: "少一天",
+        more: "多一天",
+        cancel: "取消",
+        add: "记下",
+        save: "保存",
+        delete: "删除这次",
+        /** 「2026年10月25日 周日」。 */
+        fullDate: (year: number, month: number, day: number, weekday: string) => `${year}年${month}月${day}日 ${weekday}`,
+      },
+    },
+    /** 日历子页（`/play/calendar`）。 */
+    calendar: {
+      /** 「10月27日」。 */
+      date: (month: number, day: number) => `${month}月${day}日`,
+      /** 星期几，0 是周日。 */
+      weekdays: ["周日", "周一", "周二", "周三", "周四", "周五", "周六"],
+      /** 这一天的清单里角色生日那一行名字后面的类别。 */
+      birthday: "生日",
+      /** 制作人自己的生日。 */
+      mine: "我的生日",
+      noEvents: "这一天没有事",
+      /** 三类全筛掉时月视图下面那一句。 */
+      nothingShown: "没有要显示的",
+      /** 月视图上方的筛选：一排按钮，按下的是开着的。 */
+      filters: {
+        label: "筛选",
+        character: "角色生日",
+        producer: "我的生日",
+        holiday: "节假日",
+        schedule: "日程",
+      },
+      /** 月视图的标题「2026年10月」和两边的键。 */
+      month: (year: number, month: number) => `${year}年${month}月`,
+      previousMonth: "上个月",
+      nextMonth: "下个月",
+      /** 不在当月时出现，回到当月并选中今天。 */
+      today: "今天",
+      /** 表头一行周几，周一起。 */
+      weekHeads: ["一", "二", "三", "四", "五", "六", "日"],
+      /** 电脑上一格超过三件时的第三行。 */
+      more: (n: number) => `还有 ${n} 项`,
+      /** 格子的读屏名字：「10月27日 周二，2 项」。 */
+      cell: (date: string, events: number) => (events > 0 ? `${date}，${events} 项` : date),
+      /** 「只看她」时页首下面那一条，和看全部的 ✕。 */
+      onlyHer: (name: string) => `只看${name}的日程`,
+      showAll: "看全部",
+      /** 页首末端的月 / 周切换（日程开着时才有）。 */
+      views: { label: "视图", month: "月", week: "周" },
+    },
+    /** 日历子页的日程（GLOSSARY.md「日程」「工作」「时间段」）：周视图、待排、保存条、确认框和几个抽屉。 */
+    schedule: {
+      /** 周几，0 是周一。 */
+      weekdays: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+      /** 四类工作，图标的读屏名字。 */
+      categories: { practice: "练习", appearance: "出镜", business: "事务", private: "私人" },
+      /** 三个时间段的名字，和周视图的表头。 */
+      slots: ["上午", "下午", "晚上"],
+      slotHeads: ["上午 6–12", "下午 12–18", "晚上 18–24"],
+      /** 一项占的时间：「周三 下午」「周三 上午到下午」「周三 一整天」。 */
+      when: (day: string, slots: string) => `${day} ${slots}`,
+      span: (from: string, to: string) => `${from}到${to}`,
+      wholeDay: "一整天",
+      /** 周视图的标题和两边的翻页键。 */
+      thisWeek: "本周",
+      nextWeek: "下周",
+      range: (from: string, to: string) => `${from} – ${to}`,
+      previous: "上周",
+      next: "下周",
+      unpublished: "本周的工作北京时间周一 0:00 发布",
+      /** 没有工作的已过、进行中的格子。 */
+      past: "已过",
+      underWay: "进行中",
+      /** 工作块的读屏名字和状态（已经开始了的草稿块上也写 `states.started`）。 */
+      block: (who: string, job: string, state: string) => `${who} ${job}，${state}`,
+      states: { saved: "已保存", draft: "草稿", now: "进行中", done: "做完了", started: "开始了，存不了" },
+      /** 排不了的原因，和后端 `schedule.py` 顶上的常量一样。 */
+      reasons: {
+        wholeDayFromMorning: "一整天的工作只能从上午排",
+        noRoomThatDay: "当天排不下",
+        past: "已经过了",
+        underWay: "正在进行",
+        onlyIn: (slots: string) => `只能排在${slots}`,
+        taken: "格子里有别的工作",
+      },
+      /** 几个时间段连成一句：「晚上」「下午和晚上」。 */
+      slotList: { separator: "、", last: "和" },
+      /** 待排。 */
+      pending: {
+        title: (n: number) => `待排 ${n} 项`,
+        left: (n: number) => `还能排 ${n} 格`,
+        expires: "周日 24 点后作废",
+        tonight: "今晚 24 点后作废",
+        /** 一项的说明：「2 段 · 只能下午、晚上」。 */
+        length: (n: number) => `${n} 段`,
+        only: (slots: string) => `只能${slots}`,
+        allPlaced: "本周的工作都排好了",
+      },
+      /** 手机上点了草稿块的抽屉。 */
+      takeBack: "拿回待排",
+      /** 手机上点了待排一项的抽屉，列出放得下的时间段。 */
+      placeAt: (job: string) => `${job} 排到…`,
+      nowhere: "没有放得下的时间段",
+      /** 页底的保存条。 */
+      drafts: (n: number) => `草稿 ${n} 项`,
+      draftsNote: "保存后她才知道",
+      save: "保存",
+      /** 保存前的确认框。 */
+      confirm: {
+        title: (n: number) => `保存这 ${n} 项？`,
+        description: "保存后不能更改，也不能撤掉。",
+        cancel: "再看看",
+        save: "保存",
+      },
+      /** 保存时没存下的几项：「真乃的拍摄广告：已经开始了，不保存，退回待排。」 */
+      whose: (name: string, job: string) => `${name}的${job}`,
+      startedBack: (jobs: string) => `${jobs}：已经开始了，不保存，退回待排。`,
+      returnedBack: (jobs: string, reason: string) => `${jobs}：${reason}，不保存，退回待排。`,
+    },
+  },
+  /** 酒吧（`/play/bar`，GLOSSARY.md「酒吧」）：画面里的字都是像素字，这里是它们写什么。 */
+  bar: {
+    /** 电视，读屏读的名字。 */
+    tv: "换台",
+    /** 侧边菜单下排，原版「退出」的位置：回玩法页。 */
+    leave: "离开",
+    /** 店门口和侧边菜单上排原版「读取」的位置：没全屏时进全屏，全屏时退出。 */
+    screen: { full: "全屏", window: "窗口" },
+    /** 侧边菜单上排原版的「设置」，和它弹出的设置框（「声音」「图像」两个标题和字图是原版的图，这里是读屏读的）。 */
+    settings: {
+      name: "设置",
+      close: "关上设置",
+      music: "背景音乐",
+      sfx: "音效",
+      quieter: (what: string) => `${what}调小`,
+      louder: (what: string) => `${what}调大`,
+      volume: (what: string, percent: number) => `${what}音量，${percent}%`,
+      scanlines: "扫描线",
+    },
+    /** 点唱机：侧边菜单下排原版的位置那一格、选曲界面、店里的小播放器。曲名用原版的英文名，不在这里。 */
+    jukebox: {
+      name: "点唱机",
+      title: "请选择一首曲子",
+      add: "点击左侧的曲名来添加曲目。",
+      /** 选曲界面左下的说明：电脑（细指针）和手机各一句。 */
+      howTo: {
+        fine: "悬停在曲名上试听，右键点击右侧曲目移除，点两首曲目可替换顺序。",
+        coarse: "长按左侧曲名试听，长按右侧曲目移除，点两首曲目可替换顺序。",
+      },
+      /** 右边的槽，读屏读的。 */
+      slot: (n: number, title: string | null) => (title === null ? `第 ${n} 首，空` : `第 ${n} 首，${title}`),
+      prevPage: "上一页",
+      nextPage: "下一页",
+      ready: "Ready!",
+      player: { previous: "上一首", pause: "暂停", play: "播放", next: "下一首", shuffle: "随机", loop: "单曲循环" },
+    },
+    /** 手机竖着时盖住整层的提醒。 */
+    portrait: "请横过来",
+    /** 安卓上提醒下面的按钮：进全屏、锁成横屏。 */
+    fullscreen: "全屏横过来",
+    /** 店门口：点一下进门；进不了时写为什么。 */
+    door: {
+      enter: "点一下进门",
+      /** 店门口的小按钮：从头再看一遍教程。 */
+      tutorial: "教程",
+      overLimit: (time: string) => `这一小时的光顾次数用完了，${time} 以后再来`,
+      failed: "没能进门，再点一下试试",
+    },
+    /** 文本框，读屏读的名字：点了打完这句或翻页。 */
+    next: "继续",
+    /** 文本框里制作人的名字。 */
+    producer: "制作人",
+    /** 教程期间侧边菜单「点唱机」那一格换成它：跳过教程，直接去选曲界面。 */
+    skip: "跳过",
+    /** 调酒台：开关、按钮上的字，和读屏读的材料份数。 */
+    counter: {
+      ice: "加冰",
+      aged: "陈化",
+      on: "，开着",
+      off: "，关着",
+      reset: "重做",
+      mix: "调制",
+      stop: "停止",
+      serve: "上酒",
+      parts: (name: string, n: number) => `${name}，${n} 份`,
+    },
+    /** 配方书：四个标签、每栏的标题、口味和种类的菜单分类名，翻页的读屏。饮品名用英文原名，不在这里。 */
+    book: {
+      tabs: { name: "按名称", flavor: "按口味", kind: "按种类", bottle: "瓶装饮品" },
+      search: { name: "按名称搜索", flavor: "按口味搜索", kind: "按种类搜索", bottle: "瓶装饮品" },
+      flavors: { sweet: "甜味", bitter: "苦味", sour: "酸味", spicy: "辛辣", bubbly: "发泡" },
+      kinds: { girly: "女性化", manly: "男性化", classic: "经典", classy: "时尚", promo: "宣传" },
+      /** 口味、种类的分类和它列出饮品时的标题，如「甜味饮品」。 */
+      category: (name: string) => `${name}饮品`,
+      prev: "上一页",
+      next: "下一页",
+      /** 瓶装的图，读屏读的：拖进摇酒器。 */
+      bottle: (name: string) => `${name}，拖进摇酒器`,
+    },
+    /** 光顾没了（请求得 410、调用中途断了）时店门口写的。 */
+    visitGone: "这次光顾已经结束了",
+    /** 模型出错时文本框里的按钮。 */
+    retry: "再试一次",
+    /** 她告别以后的结束卡：当天第一次写得到了什么，之后只写她走了。 */
+    end: {
+      draws: "抽奖 +1",
+      heart: "♥ ",
+      affinityUp: "好感度上升",
+      /** 什么都没给时；没读到她是谁时写「她」。 */
+      left: (name: string | null) => `${name ?? "她"}走了`,
+      again: "再营业",
+    },
+  },
+  /** 礼物子页（`/play/gifts`，GLOSSARY.md「礼物」「抽奖」，DESIGN.md「玩法页」）：抽奖台、重置卡条、我的礼物，和送礼面板、抽奖弹窗里的字。 */
   gifts: {
-    title: "礼物",
-    loading: "正在读取礼物",
-    /** 对话页上的送礼入口（冷却时输入栏右边、页首好感度标识的说明末尾、冷却版结束卡的主按钮），都跳到礼物页。 */
+    /** 对话页上的送礼入口（冷却时输入栏右边、页首好感度标识的说明末尾、冷却版结束卡的主按钮），都跳到礼物子页。 */
     giveHer: "送她一件礼物",
     /** 从对话页跳来时页首下面那一条，和取消预选的 ✕。 */
     pickFor: (name: string) => `给${name}挑一件礼物`,
@@ -1773,17 +2236,17 @@ export const zh = {
     draw: {
       title: "抽奖",
       left: (n: number) => `还有 ${n} 次`,
-      /** 小点的读屏；`over` 是每日任务给的让次数超过上限时，不再说「最多攒几次」。 */
+      /** 小点的读屏；`over` 是成就给的让次数超过上限时，不再说「最多攒几次」。 */
       label: (n: number, max: number) => `抽奖还有 ${n} 次，最多攒 ${max} 次`,
       over: (n: number) => `抽奖还有 ${n} 次`,
-      /** 超过上限（每日任务给的）时 7 个点后面写超出几次。 */
+      /** 超过上限（成就给的）时 7 个点后面写超出几次。 */
       more: (n: number) => `+${n}`,
       /** 下面那句说明：平时、攒满、用完。`next` 是下次到账的「今天 / 明天 HH:MM」（每天北京时间 0 点发，按制作人的时区写）。 */
       notes: {
-        usual: (next: string, max: number) => `${next} 再发 1 次，最多攒 ${max} 次`,
-        /** 每天发的那份攒到上限了；每日任务给的可以超过上限，所以不写「攒满几次」。 */
+        usual: (next: string, max: number) => `${next} 再发 2 次，最多攒 ${max} 次`,
+        /** 每天发的那份攒到上限了；成就给的可以超过上限，所以不写「攒满几次」。 */
         full: "每天发的已攒满，抽掉之前不会再发",
-        none: (next: string) => `已经抽完了，${next} 再发 1 次`,
+        none: (next: string) => `已经抽完了，${next} 再发 2 次`,
       },
       once: "抽一次",
       all: "全部抽完",
@@ -1821,23 +2284,6 @@ export const zh = {
         becomes: (now: string) => `，${now}，会回到信任`,
       },
     },
-    /** 抽奖台下面那一节「每日任务」。`next` 是换新时刻的「今天 / 明天 HH:MM」（每天北京时间 0 点，按制作人的时区写）。 */
-    dailyTasks: {
-      title: "每日任务",
-      /** 标题旁做完几项（「1/3」），和第三项没做完时的进度（「3/10」）。 */
-      of: (some: number, all: number) => `${some}/${all}`,
-      renews: (next: string) => `${next} 换新`,
-      names: {
-        one_turn: "和角色有一个回合",
-        one_gift: "送出一件礼物",
-        ten_turns: "和角色们一共有 10 个回合",
-      } as Record<string, string>,
-      reward: (draws: number) => `抽奖 ×${draws}`,
-      /** 三项都做完时整节收成的那一行。 */
-      allDone: "每日任务都做完了",
-      /** 没做完的一项旁边：回合任务去对话列表，送礼那项滚到我的礼物。 */
-      actions: { converse: "去对话", pick: "挑一件" },
-    },
     rarity: { common: "普通", uncommon: "少见", rare: "稀有" },
     mine: "我的礼物",
     filters: {
@@ -1855,7 +2301,7 @@ export const zh = {
     empty: {
       title: "还没有礼物",
       withDraws: "抽一次，抽到的礼物会放在这里。",
-      withoutDraws: (next: string) => `${next} 会发一次抽奖，抽到的礼物会放在这里。`,
+      withoutDraws: (next: string) => `${next} 会发 2 次抽奖，抽到的礼物会放在这里。`,
     },
     /** 送礼面板：点一件礼物拉出来，选一位送出。 */
     give: {
@@ -1871,13 +2317,8 @@ export const zh = {
       given: (name: string) => `已经送给${name}`,
       toConversation: "去对话",
     },
-    /** 好感度和礼物没开放（开关关着或没配判断模型）时整页是这个。 */
-    closed: {
-      title: "礼物暂时没有开放",
-      description: "这里还没有开放好感度和礼物。已经有的礼物会留着，开放后照常能送。",
-    },
   },
-  /** 成就（GLOSSARY.md「成就」）：她的对话页面板和礼物页那一小节里每一行的字。 */
+  /** 成就（GLOSSARY.md「成就」）：她的对话页面板和「成就」子页那一小节里每一行的字。 */
   achievements: {
     names: {
       turns: "和她的回合",
@@ -1949,11 +2390,14 @@ export const zh = {
           { term: "制作人档案", text: "你设置的称呼、性别、时区和生日（只有月和日）。" },
           { term: "好感度", text: "每位角色对你各有一份好感度，以及有没有在冷却、什么时候解除。你只看得到档位，看不到数值。它不能单独删除，删除记忆也不影响它；删除全部数据时一起删除。" },
           { term: "礼物", text: "你背包里的礼物、重置卡，还有抽奖次数。删除全部数据时一起删除。" },
-          { term: "每日任务和成就", text: "今天每日任务做到哪了，每个成就的累计进度和解锁了哪些阶段，以及它们给的抽奖次数和重置卡的到账记录。删除历史对话不影响它们，也不进数据包；删除全部数据时一起删除。" },
+          { term: "成就", text: "每个成就的累计进度和解锁了哪些阶段，以及它们给的抽奖次数和重置卡的到账记录。删除历史对话不影响它们，也不进数据包；删除全部数据时一起删除。" },
+          { term: "日程", text: "你把哪一周的哪些工作排在了哪几个时间段，以及它们有没有算过好感度。删除历史对话不影响它，也不进数据包；删除全部数据时一起删除。" },
+          { term: "周期记录", text: "你在周期页给各位角色记下的经期（第一天和天数），按你和角色分开存在服务器上。删除历史对话不影响它，会进备份，导出数据包时可以带上；删除全部数据时一起删除。" },
+          { term: "酒吧", text: "每次在酒吧玩完的光顾：来的是哪位角色、什么时候、她的来意和聊的话题、每一单她要的和你上的饮品、上得怎么样，以及她醉没醉。不存你们说的话；点唱机的曲目选择和酒吧的设置只存在这台设备上。删除历史对话不影响它，会进备份，不进数据包；删除全部数据时一起删除。" },
           { term: "搭话", text: "你在设置里的「搭话」开关，以及你看过哪些搭话。" },
-          { term: "自带密钥", text: "如果你填了自己的 API key，它只保存在你的浏览器里，我们不保存；每次回合或通话时随请求发给服务器，只在处理期间留在内存里，不写入数据库、日志或备份。" },
-          { term: "登录状态和限额的计数", text: "让你在各台设备上保持登录的状态，以及最近 24 小时内你发起回合和通话的次数、收到照片的张数（用于限额）。" },
-          { term: "运行记录", text: "每个回合、每次通话和每次搭话是和哪位角色、什么时候、结果如何（成功、失败、被拒绝等）、通话的时长和结束原因（包括角色挂断），判断模型对每个回合的判断结果（这句话让角色开心、不舒服还是没有影响，有没有判为不该说的话或操纵，有没有因此进入冷却），以及其中用了哪些服务和模型、是否用了自带密钥、用量（例如 token 数）、有没有出错和花了多久；角色发照片时，还记下描述照片的 tag 里有几个因为越界被剥掉、各属于哪一类（不记 tag 本身）；搭话还记下你有没有回；做完一项每日任务时，记下是哪一项；解锁一个成就阶段或集齐一位角色时，记下是哪个阶段、哪位角色。不含你说的话和角色的回复，不记密钥，也不记自带 LLM 的服务地址和模型名。满 90 天自动删除。" },
+          { term: "自带密钥", text: "如果你填了自己的 API key，它只保存在你的浏览器里，我们不保存；每次回合、通话、朗读或光顾酒吧时随请求发给服务器，只在处理期间（光顾是到这次光顾结束）留在内存里，不写入数据库、日志或备份。" },
+          { term: "登录状态和限额的计数", text: "让你在各台设备上保持登录的状态，以及最近 24 小时内你发起回合、通话、朗读和光顾酒吧的次数、收到照片的张数（用于限额）。" },
+          { term: "运行记录", text: "每个回合、每次通话、每次搭话和每次光顾是和哪位角色、什么时候、结果如何（成功、失败、被拒绝等）、通话的时长和结束原因（包括角色挂断），判断模型对每个回合的判断结果（这句话让角色开心、不舒服还是没有影响，有没有判为不该说的话或操纵，有没有因此进入冷却），以及其中用了哪些服务和模型、是否用了自带密钥、用量（例如 token 数）、有没有出错和花了多久；角色发照片时，还记下描述照片的 tag 里有几个因为越界被剥掉、各属于哪一类（不记 tag 本身）；搭话还记下你有没有回；解锁一个成就阶段或集齐一位角色时，记下是哪个阶段、哪位角色。不含你说的话和角色的回复，不记密钥，也不记自带 LLM 的服务地址和模型名。满 90 天自动删除。" },
           { term: "备份", text: "以上数据每天加密备份一次，存放在部署者的私有云存储里，每份保留 30 天，用于服务器出故障时恢复。" },
         ],
         notes: [],
@@ -1974,8 +2418,8 @@ export const zh = {
       {
         title: "管理者能看到什么",
         items: [
-          { term: "能看到", text: "你的登录方式（Google 或 GitHub、显示名和邮箱）、注册和最后活跃的时间、最近 24 小时到 30 天的回合和通话次数（包括被限额拒绝的）、你的用量里有多少用的是自带密钥、是否被封禁（以及封禁时管理者写的备注），以及有没有单独的限额。" },
-          { term: "看不到", text: "你和角色的对话、她发给你的照片和描述照片的 tag、角色记下的记忆、你的制作人档案，各位角色对你的好感度和冷却，以及你的礼物、重置卡、抽奖次数、每日任务和成就；好感度只能看到所有用户合起来的统计，管理者也不能调整某一位用户的好感度。" },
+          { term: "能看到", text: "你的登录方式（Google 或 GitHub、显示名和邮箱）、注册和最后活跃的时间、你是经哪条邀请链接注册的（如果是）、最近 24 小时到 30 天的回合和通话次数（包括被限额拒绝的）、你的用量里有多少用的是自带密钥、是否被封禁（以及封禁时管理者写的备注），以及有没有单独的限额。" },
+          { term: "看不到", text: "你和角色的对话、她发给你的照片和描述照片的 tag、角色记下的记忆、你的制作人档案，各位角色对你的好感度和冷却，以及你的礼物、重置卡、抽奖次数、成就、日程、周期记录和光顾记录；好感度只能看到所有用户合起来的统计，管理者也不能调整某一位用户的好感度。" },
         ],
         notes: [
           "管理者是部署者指定的少数几位用户，在只有他们能进入的后台里管理这个网站。运行记录还会汇总成全站的统计，用来查看各项服务是否正常、有多少人在用、大约花了多少钱。",
@@ -1998,7 +2442,7 @@ export const zh = {
       title: "联系部署者",
       text: (contact: string) => `对你的数据有疑问，或者想请管理者代你删除，请联系：${contact}`,
     },
-    lastUpdated: "最后更新：2026 年 10 月 20 日",
+    lastUpdated: "最后更新：2026 年 10 月 31 日",
   },
   terms: {
     title: "使用条款",
@@ -2008,10 +2452,10 @@ export const zh = {
       { term: "不保证一直可用", text: "服务由个人部署和负担费用，可能随时调整限额、暂停或关闭，数据也可能因故丢失。" },
       { term: "年满 13 岁", text: "你需要年满 13 岁才能使用。" },
       { term: "不要滥用", text: "请不要用它做违法的事，或刻意刷用量；管理者可以封禁这样的用户，或单独收紧他的限额。" },
-      { term: "玩法：好感度、冷却和礼物", text: "角色对你的好感度会随你说的话升降：好好对她，她会更亲近你；冒犯她，她会疏远你，好感度跌到底时她会暂时不和你说话，这段时间叫冷却，通话中她也会挂断电话；一次通话里说了两次不该说的话（性骚扰、辱骂、威胁等），她同样会挂断。这些都是玩法的一部分，由 AI 根据你说的话判断，可能误判。冷却最长 24 小时，到时自动解除，不是封禁，也不是限额；管理者不会人工调整任何人的好感度或冷却。礼物、重置卡和抽奖次数只是应用里的玩法物品，没有现金价值，不能转让或交易；服务调整或关闭时，它们可能随之消失。每日任务和成就给的抽奖次数和重置卡也一样；任务和成就的内容、门槛和奖励可能调整，已经得到的不收回。" },
+      { term: "玩法：好感度、冷却和礼物", text: "角色对你的好感度会随你说的话升降：好好对她，她会更亲近你；冒犯她，她会疏远你，好感度跌到底时她会暂时不和你说话，这段时间叫冷却，通话中她也会挂断电话；一次通话里说了两次不该说的话（性骚扰、辱骂、威胁等），她同样会挂断。这些都是玩法的一部分，由 AI 根据你说的话判断，可能误判。冷却最长 24 小时，到时自动解除，不是封禁，也不是限额；管理者不会人工调整任何人的好感度或冷却。礼物、重置卡和抽奖次数只是应用里的玩法物品，没有现金价值，不能转让或交易；服务调整或关闭时，它们可能随之消失。成就给的抽奖次数和重置卡也一样；成就的内容、门槛和奖励可能调整，已经得到的不收回。每周发布的工作和你排的日程只影响她怎么说话和她对你的好感度，没有别的奖励；没排的工作每周作废，工作的内容和每周的规模可能调整。周期页的推算只供参考，不作医疗或避孕的依据。" },
       { term: "自带密钥", text: "你填进来的自己的 API key（LLM、语音合成、语音识别、生图都算），由你自己遵守那项服务的条款，包括它对年龄和用途的要求。" },
     ],
     seePrivacy: "数据怎样保存和处理，见{privacy}。",
-    lastUpdated: "最后更新：2026 年 10 月 20 日",
+    lastUpdated: "最后更新：2026 年 10 月 25 日",
   },
 };

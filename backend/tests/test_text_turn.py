@@ -24,13 +24,17 @@ async def send_turn(
     own_llm: dict | None = None,
     *,
     own_keys: dict | None = None,
+    read_aloud_model: str | None = None,
 ) -> list[dict]:
     """Send a text turn, bringing the user's `own_keys` if given, or else their `own_llm`
-    alone (as `own_keys`, which turns and calls bring alike), and collect the server-sent
-    events it streams back."""
+    alone (as `own_keys`, which turns and calls bring alike), and the model of their own key
+    for speech synthesis if given (`read_aloud_model`), and collect the server-sent events it
+    streams back."""
     events: list[dict] = []
     own_keys = own_keys or ({"llm": own_llm} if own_llm else None)
-    body = {"text": text} | ({"own_keys": own_keys} if own_keys else {})
+    body = {"text": text} | ({"own_keys": own_keys} if own_keys else {}) | (
+        {"read_aloud_model": read_aloud_model} if read_aloud_model else {}
+    )
     async with client.stream(
         "POST", f"/api/conversations/{conversation_id}/turns", json=body
     ) as res:
@@ -177,10 +181,11 @@ async def test_prompt_carries_the_character_sheet_and_the_conversation_so_far(
     await send_turn(client, conversation_id, "这只鸽子叫什么？")
     await send_turn(client, conversation_id, "好可爱")
 
-    # Without a world setting, the part every user's turns with her share is her sheet and
-    # how she is to format her reply.
+    # Without a world setting, the part every user's turns with her share is her sheet, her
+    # birthday and how she is to format her reply.
     assert llm.prompts[1][0] == ChatMessage(
-        "system", f"{MANO_SHEET}\n\n{FORMAT_INSTRUCTIONS}", cache_breakpoint=True
+        "system", f"{MANO_SHEET}\n\n你的生日是4月25日。\n\n{FORMAT_INSTRUCTIONS}",
+        cache_breakpoint=True,
     )
     system = system_of(llm.prompts[1])
     assert "櫻木真乃" in system

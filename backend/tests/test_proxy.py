@@ -30,6 +30,7 @@ from eidolon.config import (
     split_proxy_password,
     with_proxy_password,
 )
+from eidolon.data_access import Database
 from eidolon.llm import ChatMessage, LLMError
 from eidolon.image_generation import ImageFailed
 from eidolon.own_keys import OwnImageService, ProviderLLMService
@@ -300,6 +301,11 @@ POOL_LIMIT = MAX_CONNECTIONS
 own 100, which the tunnels below would wait on, given up on, were it that."""
 
 GIVEN_UP = httpx.Timeout(5, connect=0.2, pool=1)
+"""For tunnels whose TLS never starts: given up on soon."""
+
+ROOM = httpx.Timeout(5, pool=1)
+"""For the request then to find room in the pool: failing soon if there is none, with time to
+connect, which tests run side by side can take."""
 
 
 async def test_tunnels_whose_tls_timed_out_leave_the_pool_room(stalling: StallingProxy):
@@ -310,7 +316,7 @@ async def test_tunnels_whose_tls_timed_out_leave_the_pool_room(stalling: Stallin
             return_exceptions=True,
         )
         assert all(isinstance(e, httpx.ConnectTimeout) for e in failed)
-        res = await client.get("http://provider.example/")
+        res = await client.get("http://provider.example/", timeout=ROOM)
     await routes.aclose()
 
     assert res.text == "ok"
@@ -318,7 +324,7 @@ async def test_tunnels_whose_tls_timed_out_leave_the_pool_room(stalling: Stallin
 
 async def test_tunnels_given_up_on_as_tls_starts_leave_the_pool_room(stalling: StallingProxy):
     routes = ProxyRoutes(ProxySettings(stalling.url, True, frozenset({"judge"})))
-    async with routes.client("judge", httpx.Timeout(5, pool=1)) as client:
+    async with routes.client("judge", ROOM) as client:
         requests = [
             asyncio.ensure_future(client.post("https://provider.example/systemone"))
             for _ in range(POOL_LIMIT)
@@ -402,7 +408,7 @@ KNOWN = "https://llm.known.example/v1"
 
 
 @pytest.fixture
-def catalog(settings: Settings) -> Catalog:
+async def catalog(settings: Settings) -> AsyncIterator[Catalog]:
     """The price catalogs as fetched: a provider at `KNOWN`, one whose model says it is
     served at an address of its own, and those that are not on the internet by name: one
     run on this machine, as models.dev lists LM Studio, and others at an address or a name
@@ -416,9 +422,12 @@ def catalog(settings: Settings) -> Catalog:
             "m": {"id": "m", "provider": {"api": "https://llm.relayed.example/anthropic/v1"}},
         }},
     })
-    catalog = Catalog(settings.database_path, FakeClock(), fake.transport())
-    catalog.refresh()
-    return catalog
+    db = Database(settings.database_path)
+    catalog = Catalog(db, FakeClock(), fake.transport())
+    await catalog.refresh()
+    yield catalog
+    await catalog.aclose()
+    await db.close()
 
 
 async def own_llm_fails(service: ProviderLLMService, base_url: str) -> str:
@@ -445,7 +454,6 @@ async def test_a_users_own_llm_goes_through_the_proxy_only_to_a_known_providers_
     finally:
         await service.aclose()
         await routes.aclose()
-        catalog.close()
 
     assert proxy.went == ["llm.known.example:443"]
     for why in [over_http, not_ticked]:
@@ -468,7 +476,6 @@ async def test_a_known_providers_llm_is_tried_through_the_proxy_not_looked_up_he
     finally:
         await service.aclose()
         await routes.aclose()
-        catalog.close()
 
     assert "公网地址" not in str(through_proxy.value) and "找不到" not in str(through_proxy.value)
     assert proxy.went and set(proxy.went) == {"llm.known.example:443"}
@@ -529,7 +536,6 @@ def test_known_providers_are_the_catalogs_hosts_and_those_written_down_by_name_o
         )
         if catalog.known_provider(host)
     ]
-    catalog.close()
 
     assert known == [
         "llm.known.example", "LLM.Known.Example", "generativelanguage.googleapis.com",

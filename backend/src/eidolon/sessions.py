@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated
 from urllib.parse import SplitResult, urlsplit
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from eidolon.config import Settings
@@ -126,12 +126,12 @@ def session_middleware(
     return middleware
 
 
-def session_user(request: Request) -> User | None:
+async def session_user(request: Request) -> User | None:
     """The user whose session the request's cookie carries, if any; renews the session
     (and, through the session middleware, the cookie) now and then."""
     backend: "Backend" = request.app.state.backend
     token = request.cookies.get(SESSION_COOKIE)
-    session = backend.store.use_session(token, backend.clock()) if token else None
+    session = await backend.store.use_session(token, backend.clock()) if token else None
     if session is None:
         return None
     if session.renewed:
@@ -139,10 +139,10 @@ def session_user(request: Request) -> User | None:
     return session.user
 
 
-def signed_in_user(request: Request) -> User:
+async def signed_in_user(request: Request) -> User:
     """The signed-in user; 401 if the browser is not signed in, 403 if the user is banned
     (banning ends their sessions, so only a request under way when it did gets this)."""
-    user = session_user(request)
+    user = await session_user(request)
     if user is None:
         raise HTTPException(401, "请先登录")
     if user.banned_at is not None:
@@ -167,3 +167,6 @@ def current_user(user: SignedIn) -> str:
 
 
 UserId = Annotated[str, Depends(current_user)]
+
+DeviceTimezone = Annotated[str | None, Header(alias="X-Timezone")]
+"""The time zone the browser detected; the producer profile's own time zone overrides it."""
