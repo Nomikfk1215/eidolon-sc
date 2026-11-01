@@ -3,7 +3,8 @@
 After each turn the background model reads the exchange and writes down, in Chinese,
 whatever the user revealed about themselves that is worth keeping. Each memory belongs
 to the user and names the character it was told to, its source character. All of a
-user's characters share their memories, and a character finding one told to someone
+user's characters share ordinary memories; private ones are visible only to their source
+character (ADR-Ultra-0001). A character finding a shared memory told to someone
 else is asked to pass it on as hearsay (ADR-0002); users never share theirs.
 
 A turn goes `begin` → `candidates` → `find` → `write_down`. The turn's query (see
@@ -42,6 +43,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from eidolon.activity import detached
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS memories (
     text TEXT NOT NULL,
     created_at TEXT NOT NULL,
     superseded_by INTEGER,
-    UNIQUE (user_id, text)
+    visibility TEXT NOT NULL DEFAULT 'shared' CHECK (visibility IN ('shared', 'private'))
 );
 -- Deleting a conversation clears this from the memories written down in it.
 CREATE INDEX IF NOT EXISTS memories_by_conversation ON memories(conversation_id);
@@ -103,6 +105,9 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
 );
 CREATE INDEX IF NOT EXISTS memory_vectors_by_user ON memory_vectors(user_id, model);
 """
+
+
+Visibility = Literal["shared", "private"]
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,7 @@ class Memory:
     """The memory that superseded it, None while it holds (ADR-0014)."""
     conversation_id: str | None = None
     """The conversation it was told in; None if that is not known or no longer there."""
+    visibility: Visibility = "shared"
 
 
 PackageKey = int | str
@@ -140,30 +146,44 @@ class CarriedMemory:
     superseded_by: PackageKey | None
     conversation_id: str | None
     """The conversation here it was told in, None if it is not here."""
+    visibility: Visibility = "shared"
 
 
 def add_carried(db: sqlite3.Connection, user_id: str, carried: Sequence[CarriedMemory]) -> int:
     """Add the memories `carried` to the user's through `db`, in the caller's transaction;
-    returns how many were new. One whose text the user already has is not added again; what
-    supersedes it, or what it says supersedes it, is the one already here. The new ones are
+    returns how many were new. Text is deduplicated within its scope (private memories also
+    match their source). A shared import matching an existing private memory uses that
+    private row without widening it. The new ones are
     superseded as the package says, by new ones or ones already here; those already here are
     left as they are, their superseding too. Their source characters are kept as they are,
     here or not. They are embedded afterwards, outside the transaction (`embed_carried`)."""
     ids: dict[PackageKey, int] = {}
     new: list[CarriedMemory] = []
+    # Suppress widening of rows already here, while preserving separate shared/private
+    # copies intentionally carried together in a new package, independent of their order.
+    private_before = dict(db.execute(
+        "SELECT text, id FROM memories WHERE user_id = ? AND visibility = 'private' ORDER BY id DESC",
+        (user_id,),
+    ).fetchall())
     for memory in carried:
         kept = db.execute(
-            "SELECT id FROM memories WHERE user_id = ? AND text = ?", (user_id, memory.text)
+            "SELECT id FROM memories WHERE user_id = ? AND text = ?"
+            " AND visibility = ? AND (visibility = 'shared' OR source_character_id = ?)"
+            " ORDER BY id LIMIT 1",
+            (user_id, memory.text, memory.visibility, memory.source_character_id),
         ).fetchone()
         if kept is not None:
             ids[memory.key] = kept[0]
             continue
+        if memory.visibility == "shared" and memory.text in private_before:
+            ids[memory.key] = private_before[memory.text]
+            continue
         cursor = db.execute(
             "INSERT INTO memories"
-            " (user_id, source_character_id, conversation_id, text, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
+            " (user_id, source_character_id, conversation_id, text, created_at, visibility)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (user_id, memory.source_character_id, memory.conversation_id, memory.text,
-             memory.created_at),
+             memory.created_at, memory.visibility),
         )
         assert cursor.lastrowid is not None
         ids[memory.key] = cursor.lastrowid
@@ -233,7 +253,8 @@ class Memories:
         with `llm`, held on to with `hold` (see `TurnLLMs.hold_background`) until written."""
         clearings = self._clearings.get(conversation.user_id, 0)
         await self._settle(conversation.user_id)
-        return MemoryTurn(self, conversation, timezone, clearings, llm, hold)
+        scope_revision = await self._db.read(_scope_revision, conversation.user_id)
+        return MemoryTurn(self, conversation, timezone, clearings, llm, hold, scope_revision=scope_revision)
 
     async def entries(self, user_id: str) -> list[Memory]:
         """All of the user's memories, newest first, including what their turns so far
@@ -246,6 +267,20 @@ class Memories:
         """Forget one of the user's memories; False if they have no such memory."""
         await self._settle(user_id)
         return await self._db.write(_delete, user_id, memory_id)
+
+    async def set_visibility(self, user_id: str, memory_id: int, visibility: Visibility) -> bool:
+        """Change only the scope, without waiting for background extraction."""
+        if visibility not in ("shared", "private"):
+            raise ValueError("unknown memory visibility")
+
+        return await self._db.write(_set_visibility, user_id, memory_id, visibility)
+
+    async def visible(self, conversation: Conversation, candidates: Sequence[Memory]) -> list[Memory]:
+        """Refresh snapshots before passing their contents to a model."""
+        current = {m.id: m for m in await self.kept(conversation.user_id)}
+        return [current[m.id] for m in candidates if m.id in current
+                and current[m.id].superseded_by is None
+                and _visible(current[m.id], conversation.character_id)]
 
     async def clear(self, user_id: str) -> None:
         """Forget all of the user's memories, including those their turns so far are still
@@ -332,25 +367,15 @@ class Memories:
         if pending := self._pending.get(user_id):
             await asyncio.wait(set(pending), timeout=SETTLE_TIMEOUT)
 
-    async def _candidates(self, user_id: str, query_vector: Sequence[float]) -> list[Memory]:
+    async def _candidates(self, conversation: Conversation, query_vector: Sequence[float]) -> list[Memory]:
         if (services := self._services) is None:
             return []
         try:
-            return await self._nearest(services.embedder, user_id, query_vector, CANDIDATES)
+            return await self._nearest(services.embedder, conversation.user_id, query_vector, CANDIDATES,
+                                       viewer=conversation.character_id)
         except EmbeddingError:
             log.warning("embedding memories failed; replying without them", exc_info=True)
             return []
-
-    async def _find(
-        self,
-        conversation: Conversation,
-        timezone: str,
-        query_text: str,
-        candidates: Sequence[Memory],
-    ) -> str | None:
-        found = await self._relevant(query_text, candidates)
-        character = self._characters[conversation.character_id]
-        return _memories_prompt(found, character, timezone, _FOUND) if found else None
 
     async def _relevant(self, query_text: str, candidates: Sequence[Memory]) -> list[Memory]:
         """As many as `MAX_FOUND` of the `candidates` relevant to `query_text`, most relevant
@@ -398,6 +423,7 @@ class Memories:
         ][-MAX_LATEST:]
         ids = {m.id for m in found}
         recalled = [*found, *(m for m in reversed(latest) if m.id not in ids)]
+        recalled = await self.visible(conversation, recalled)
         character = self._characters[character_id]
         return (
             _memories_prompt(recalled, character, timezone, _REACHING_OUT) if recalled else None
@@ -410,6 +436,7 @@ class Memories:
         query_vector: Sequence[float],
         limit: int,
         character_id: str | None = None,
+        *, viewer: str | None = None,
     ) -> list[Memory]:
         """As many as `limit` of the user's holding memories nearest a query embedded with
         `embedder`, nearest first, only those told to the character `character_id` if given.
@@ -417,12 +444,16 @@ class Memories:
         memories, stored = await self._db.read(
             self._kept_with_vectors, user_id, embedder.model
         )
-        vectors = await self._vectors(embedder, user_id, memories, stored)
+        memories = [m for m in memories if _visible(m, viewer or character_id)]
+        vectors = await self._vectors(embedder, user_id, memories, stored, forget=False)
         holding = _holding(memories, character_id)
         found = await asyncio.to_thread(
             nearest, [vectors[m.id] for m in holding], query_vector, limit
         )
-        return [holding[i] for i, _ in found]
+        current = {m.id: m for m in await self.kept(user_id)}
+        return [current[holding[i].id] for i, _ in found if holding[i].id in current
+                and current[holding[i].id].superseded_by is None
+                and _visible(current[holding[i].id], viewer or character_id)]
 
     async def _shown(
         self,
@@ -430,6 +461,7 @@ class Memories:
         user_id: str,
         query_text: str,
         query_vector: Sequence[float] | None,
+        character_id: str,
     ) -> list[Memory]:
         """The memories the background model is shown: the user's holding memories nearest
         `query_text`, embedded unless it already was (`query_vector`), or while that cannot
@@ -437,11 +469,12 @@ class Memories:
         try:
             if query_vector is None:
                 query_vector = await embedder.embed_query(query_text)
-            return await self._nearest(embedder, user_id, query_vector, SHOWN_MEMORIES)
+            return await self._nearest(embedder, user_id, query_vector, SHOWN_MEMORIES, viewer=character_id)
         except EmbeddingError:
             log.warning("embedding the turn failed; the background model is shown the latest"
                         " memories", exc_info=True)
-            return _holding(await self.kept(user_id))[-SHOWN_MEMORIES:]
+            return [m for m in _holding(await self.kept(user_id))
+                    if _visible(m, character_id)][-SHOWN_MEMORIES:]
 
     def _write_down(
         self,
@@ -454,6 +487,8 @@ class Memories:
         text: str,
         reply: Message,
         query_vector: Sequence[float] | None,
+        scope_revision: int,
+        private_injected: bool,
     ) -> None:
         if (services := self._services) is None:
             return
@@ -461,7 +496,8 @@ class Memories:
         release = hold() if hold is not None else None
         task = asyncio.create_task(
             self._write(
-                services, llm, conversation, clearings, history, text, reply, query_vector, now
+                services, llm, conversation, clearings, history, text, reply, query_vector, now,
+                scope_revision, private_injected,
             ),
             context=detached(),  # after the turn, not part of it (see `activity`)
         )
@@ -492,14 +528,29 @@ class Memories:
         reply: Message,
         query_vector: Sequence[float] | None,
         now: datetime,
+        scope_revision: int,
+        private_injected: bool,
     ) -> None:
         user_id = conversation.user_id
         try:
+            revision, has_private = await self._db.read(_extraction_scope, user_id)
+            if revision != scope_revision:
+                return  # changed while the chat model was replying
             character = self._characters[conversation.character_id]
+            # History and her reply can carry earlier private inputs across turns. With
+            # private memories, extract only from his latest words and visible memories.
+            extraction_history = [] if has_private else history
+            query = text if has_private else memory_query(history, text)
             shown = await self._shown(
-                services.embedder, user_id, memory_query(history, text), query_vector
+                services.embedder, user_id, query, None if has_private else query_vector,
+                conversation.character_id,
             )
-            prompt = _extraction_prompt(character, history, text, reply, shown, now)
+            shown = await self.visible(conversation, shown)
+            if await self._db.read(_scope_revision, user_id) != scope_revision:
+                return
+            prompt = _extraction_prompt(
+                character, extraction_history, text, None if has_private else reply, shown, now
+            )
             answer = "".join([
                 chunk async for chunk in llm.stream(prompt)
                 if isinstance(chunk, str)
@@ -513,7 +564,7 @@ class Memories:
                 return
             if self._clearings.get(user_id, 0) != clearings:
                 return  # cleared since the turn began
-            added = await self._db.write(self._add, conversation, written, shown, now)
+            added = await self._db.write(self._add, conversation, written, shown, now, scope_revision, private_injected)
         except Exception:
             log.warning("writing memories failed in conversation %s", conversation.id,
                         exc_info=True)
@@ -536,7 +587,7 @@ class Memories:
         """What `kept` reads, read through `db`: for a data package too."""
         rows = db.execute(
             "SELECT id, user_id, source_character_id, text, created_at, superseded_by,"
-            " conversation_id FROM memories WHERE user_id = ? ORDER BY id",
+            " conversation_id, visibility FROM memories WHERE user_id = ? ORDER BY id",
             (user_id,),
         ).fetchall()
         return [self._memory(*row) for row in rows]
@@ -551,11 +602,12 @@ class Memories:
     def _memory(
         self, id: int, user_id: str, source_character_id: str, text: str, created_at: str,
         superseded_by: int | None = None, conversation_id: str | None = None,
+        visibility: Visibility = "shared",
     ) -> Memory:
         source = self._characters.get(source_character_id)
         return Memory(
             id, user_id, source_character_id, source.name if source else None, text,
-            created_at, superseded_by, conversation_id,
+            created_at, superseded_by, conversation_id, visibility,
         )
 
     def _add(
@@ -565,6 +617,8 @@ class Memories:
         written: Sequence["NewMemory"],
         shown: Sequence[Memory],
         now: datetime,
+        scope_revision: int,
+        private_injected: bool,
     ) -> list[Memory]:
         """Remember what the user told the conversation's character just `now`, each new
         memory superseding those it names among the memories the background model was
@@ -573,26 +627,37 @@ class Memories:
         added = []
         user_id = conversation.user_id
         created_at = now.astimezone(UTC).isoformat()
+        # Also catches a scope change followed by deletion: no row remains to compare.
+        if _scope_revision(db, user_id) != scope_revision:
+            return []
+        # Refresh scope snapshots inside the same transaction as the new memories.
+        current = {m.id: m for m in self.read_kept(db, user_id)}
+        if any(m.id in current and (not _visible(current[m.id], conversation.character_id)) for m in shown):
+            return []
+        # The model can use any shown memory even without declaring a supersedes edge.
+        private_input = private_injected or any(m.visibility == "private" for m in shown)
+        visibility: Visibility = "private" if private_input else "shared"
         for memory in written:
             kept = db.execute(
                 "SELECT id, superseded_by IS NOT NULL FROM memories"
-                " WHERE user_id = ? AND text = ?",
-                (user_id, memory.text),
+                " WHERE user_id = ? AND text = ? AND visibility = ?"
+                " AND (visibility = 'shared' OR source_character_id = ?) ORDER BY id LIMIT 1",
+                (user_id, memory.text, visibility, conversation.character_id),
             ).fetchone()
             if kept is None:
                 # Its conversation may have been deleted since the turn (GLOSSARY.md
                 # 「历史对话」): the memory is kept all the same, saying where no longer.
                 cursor = db.execute(
                     "INSERT INTO memories"
-                    " (user_id, source_character_id, conversation_id, text, created_at)"
-                    " VALUES (?, ?, (SELECT id FROM conversations WHERE id = ?), ?, ?)",
+                    " (user_id, source_character_id, conversation_id, text, created_at, visibility)"
+                    " VALUES (?, ?, (SELECT id FROM conversations WHERE id = ?), ?, ?, ?)",
                     (user_id, conversation.character_id, conversation.id, memory.text,
-                     created_at),
+                     created_at, visibility),
                 )
                 assert cursor.lastrowid is not None
                 id = cursor.lastrowid
                 added.append(self._memory(
-                    id, user_id, conversation.character_id, memory.text, created_at
+                    id, user_id, conversation.character_id, memory.text, created_at, visibility=visibility
                 ))
             else:
                 id, superseded = kept
@@ -610,6 +675,8 @@ class Memories:
                     (id, shown[n - 1].id, user_id)
                     for n in memory.supersedes
                     if 1 <= n <= len(shown) and shown[n - 1].id != id
+                    and shown[n - 1].id in current
+                    and _visible(current[shown[n - 1].id], conversation.character_id)
                 ],
             )
         return added
@@ -642,10 +709,58 @@ class Memories:
 
 
 def _open(db: sqlite3.Connection) -> None:
-    db.executescript(_SCHEMA)
+    for statement in _SCHEMA.split(";"):
+        if statement.strip():
+            db.execute(statement)
     columns = {row[1] for row in db.execute("PRAGMA table_info(memories)")}
     if "superseded_by" not in columns:  # kept from before superseding: all hold
         db.execute("ALTER TABLE memories ADD COLUMN superseded_by INTEGER")
+
+    if "visibility" not in columns:
+        # Rebuild the legacy table to remove its cross-scope UNIQUE(user_id, text).
+        # Keep ids so vectors and superseding chains continue to point at the same rows.
+        db.execute("ALTER TABLE memories RENAME TO memories_legacy")
+        db.execute("DROP INDEX IF EXISTS memories_by_conversation")
+        for statement in _SCHEMA.split(";"):
+            if statement.strip():
+                db.execute(statement)
+        db.execute("INSERT INTO memories (id, user_id, source_character_id, conversation_id,"
+                   " text, created_at, superseded_by) SELECT id, user_id, source_character_id,"
+                   " conversation_id, text, created_at, superseded_by FROM memories_legacy")
+        db.execute("DROP TABLE memories_legacy")
+    db.execute("CREATE INDEX IF NOT EXISTS memories_by_text ON memories(user_id, text)")
+    # Corpus-only maintenance can open memory before any users have been created.
+    user_columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+    if user_columns and "memory_scope_revision" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN memory_scope_revision INTEGER NOT NULL DEFAULT 0")
+
+
+def _visible(memory: Memory, character_id: str | None) -> bool:
+    return memory.visibility == "shared" or memory.source_character_id == character_id
+
+
+def _scope_revision(db: sqlite3.Connection, user_id: str) -> int:
+    row = db.execute("SELECT memory_scope_revision FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row[0] if row is not None else -1
+
+
+def _extraction_scope(db: sqlite3.Connection, user_id: str) -> tuple[int, bool]:
+    """The revision and privacy policy as one database snapshot."""
+    return _scope_revision(db, user_id), bool(db.execute(
+        "SELECT EXISTS (SELECT 1 FROM memories WHERE user_id = ? AND visibility = 'private')",
+        (user_id,),
+    ).fetchone()[0])
+
+
+def _set_visibility(db: sqlite3.Connection, user_id: str, memory_id: int, visibility: Visibility) -> bool:
+    changed = db.execute(
+        "UPDATE memories SET visibility = ? WHERE id = ? AND user_id = ?",
+        (visibility, memory_id, user_id),
+    ).rowcount > 0
+    if changed:
+        db.execute("UPDATE users SET memory_scope_revision = memory_scope_revision + 1 WHERE id = ?",
+                   (user_id,))
+    return changed
 
 
 def _delete(db: sqlite3.Connection, user_id: str, memory_id: int) -> bool:
@@ -741,26 +856,41 @@ class MemoryTurn:
         clearings: int,
         llm: ChatLLM,
         hold: Callable[[], Callable[[], None]] | None = None,
+        *, scope_revision: int,
     ) -> None:
         self._memories = memories
         self._conversation = conversation
         self._timezone = timezone
         self._clearings = clearings
+        self._scope_revision = scope_revision
         self._llm = llm
         self._hold = hold
+        self._found: list[Memory] = []
+        self._private_injected = False
+
+    async def refresh_prompt(self, *, injecting: bool = True) -> str | None:
+        found = await self._memories.visible(self._conversation, self._found)
+        if injecting:
+            # Retain private input across tool rounds even if later retrieval or the
+            # background model's latest-memories fallback no longer includes it.
+            self._private_injected |= any(m.visibility == "private" for m in found)
+        character = self._memories._characters[self._conversation.character_id]
+        return _memories_prompt(found, character, self._timezone, _FOUND) if found else None
 
     async def candidates(self, query_vector: Sequence[float]) -> list[Memory]:
         """As many as `CANDIDATES` of the user's holding memories nearest the turn's query
         (see `memory_query`) embedded with the memories' embedder, nearest first, for
         `find`; none if memory is off or the memories not embedded yet cannot be."""
-        return await self._memories._candidates(self._conversation.user_id, query_vector)
+        return await self._memories._candidates(self._conversation, query_vector)
 
     async def find(self, query: str, candidates: Sequence[Memory]) -> str | None:
         """The prompt section carrying those of the `candidates` relevant to `query`, the
         turn's query, most relevant first, each labelled with who it was told to and to be
         passed on as hearsay when that was someone else; None if none are relevant, memory
         is off or reranking failed."""
-        return await self._memories._find(self._conversation, self._timezone, query, candidates)
+        candidates = await self._memories.visible(self._conversation, candidates)
+        self._found = await self._memories._relevant(query, candidates)
+        return await self.refresh_prompt(injecting=False)
 
     def write_down(
         self,
@@ -774,7 +904,7 @@ class MemoryTurn:
         already, if it was, so it is not embedded again."""
         self._memories._write_down(
             self._conversation, self._timezone, self._clearings, self._llm, self._hold,
-            history, text, reply, query_vector,
+            history, text, reply, query_vector, self._scope_revision, self._private_injected,
         )
 
 
@@ -808,7 +938,7 @@ def _extraction_prompt(
     character: Character,
     history: Sequence[Message],
     text: str,
-    reply: Message,
+    reply: Message | None,
     shown: Sequence[Memory],
     now: datetime,
 ) -> list[ChatMessage]:
@@ -820,7 +950,9 @@ def _extraction_prompt(
             lines.append(f"制作人：{message.text}")
         else:
             lines.append(f"{character.name}：{_said(message)}")
-    lines += [f"制作人（最新的一句话）：{text}", f"{character.name}：{_said(reply)}"]
+    lines.append(f"制作人（最新的一句话）：{text}")
+    if reply is not None:
+        lines.append(f"{character.name}：{_said(reply)}")
     return [ChatMessage("system", _INSTRUCTIONS), ChatMessage("user", "\n".join(lines))]
 
 

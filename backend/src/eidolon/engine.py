@@ -778,20 +778,7 @@ class ConversationEngine:
             if eligibility is not None else None
         )
         about_photo = CANNOT_SEND if eligibility is None else photo_asked and photo_asked.prompt
-        prompt = self._prompt(
-            character, world_prompt, producer_prompt(profile),
-            chat_history(messages, turns),
-            narrations(record, self._gift_catalog, timezone, her_days),
-            [
-                self._now_section(
-                    known, occasion, now, timezone, profile, last_contact, affinity_lines
-                ),
-                *([about_photo] if about_photo else []),
-            ],
-            [p for p in (retrieved.memories_prompt, retrieved.prompt) if p],
-            text, voiced_by,
-            image, picture_note, picture_is_her, picture_other,
-        )
+        continuation: list[ChatMessage] = []
 
         # Offered on every turn, so that what goes before the history (the tools, with
         # many services) opens every turn's prompt alike, for the service to cache it.
@@ -806,6 +793,22 @@ class ConversationEngine:
                 said = ""
                 calls: list[ToolCall] = []
                 reasoning: list[Reasoning] = []
+                memories_prompt = await memory.refresh_prompt()
+                prompt = self._prompt(
+                    character, world_prompt, producer_prompt(profile),
+                    chat_history(messages, turns),
+                    narrations(record, self._gift_catalog, timezone, her_days),
+                    [
+                        self._now_section(
+                            known, occasion, now, timezone, profile, last_contact, affinity_lines
+                        ),
+                        *([about_photo] if about_photo else []),
+                    ],
+                    [p for p in (memories_prompt, retrieved.prompt) if p],
+                    text, voiced_by,
+                    image, picture_note, picture_is_her, picture_other,
+                )
+                prompt.extend(continuation)
                 stream = llms.chat.stream(prompt, tools, forbid_calls=forbidden)
                 try:
                     while (item := await _unless_stopped(stop, anext, stream, None)) is not None:
@@ -833,16 +836,15 @@ class ConversationEngine:
                 # A call to a tool not offered, or made when forbidden, goes unanswered.
                 if not calls or not tools or forbidden:
                     break
-                prompt = [
-                    *prompt,
-                    ChatMessage("assistant", said, tuple(calls), reasoning=tuple(reasoning)),
-                ]
+                continuation.append(
+                    ChatMessage("assistant", said, tuple(calls), reasoning=tuple(reasoning))
+                )
                 last_round = step + 1 == MAX_TOOL_ROUNDS
                 for call in calls:
                     result = await _unless_stopped(stop, self._call_tool, character, call)
                     if last_round:
                         result = f"{result}\n\n{LAST_ROUND_NOTE}"
-                    prompt.append(ChatMessage("tool", result, tool_call_id=call.id))
+                    continuation.append(ChatMessage("tool", result, tool_call_id=call.id))
         except _Stopped:
             pass
 

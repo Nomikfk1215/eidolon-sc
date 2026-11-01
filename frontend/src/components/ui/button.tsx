@@ -15,8 +15,9 @@ const buttonVariants = cva(
         // eidolon: 悬停色原来是任意值里的 color-mix(…var(--secondary)…)；任意值里不写颜色（frontend/AGENTS.md），改用 /80。
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
+        // eidolon: 记忆范围图钉按下时铺中性 bg-muted，和其它选中状态一致。
         ghost:
-          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
+          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground aria-pressed:bg-muted dark:hover:bg-muted/50",
         // eidolon: 原来是淡红底红字；DESIGN.md「Buttons」要挂断红实底、白字（白字的对比度在 themeContrast.test.ts 里）。
         destructive:
           "bg-destructive text-white hover:bg-destructive/90 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",

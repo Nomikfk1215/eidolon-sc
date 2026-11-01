@@ -249,6 +249,7 @@ export type Memory = {
   created_at: string;
   /** 已被后来的记忆取代：角色不会再想起，删掉取代它的那条就恢复（ADR-0014）。 */
   superseded: boolean;
+  visibility: "shared" | "private";
 };
 
 /** During a call each utterance, spoken or typed, is a turn; the backend also says when each
@@ -820,6 +821,12 @@ export async function saveProfile(profile: ProducerProfile): Promise<ProducerPro
 /** Newest first. */
 export async function listMemories(): Promise<Memory[]> {
   return json(await api("/api/memories"));
+}
+
+export async function setMemoryVisibility(id: number, visibility: Memory["visibility"]): Promise<void> {
+  await expectNoContent(await api(`/api/memories/${id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ visibility }),
+  }));
 }
 
 export async function deleteMemory(id: number): Promise<void> {

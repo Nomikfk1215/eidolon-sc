@@ -120,7 +120,7 @@ async def test_the_producer_profile_moves_to_another_deployment(
     entries, manifest, data = unzipped(package)
     assert [e.filename for e in entries] == ["manifest.json", "data.json"]
     assert entries[0].compress_type == zipfile.ZIP_STORED
-    assert manifest["format"] == 3
+    assert manifest["format"] == 4
     assert manifest["categories"] == ["profile"]
     assert manifest["counts"] == {"profile": 1}
     assert data == {"profile": {
@@ -217,9 +217,9 @@ async def test_a_package_from_a_newer_version_is_refused_whatever_its_entries(
     make_client: ClientFactory,
 ):
     client = make_client(FakeLLM())
-    newer = json.dumps({**MANIFEST, "format": 4, "categories": ["albums"]})
+    newer = json.dumps({**MANIFEST, "format": 5, "categories": ["albums"]})
     packages = {
-        "entries as now": package_of({**MANIFEST, "format": 4, "categories": ["albums"]}, {}),
+        "entries as now": package_of({**MANIFEST, "format": 5, "categories": ["albums"]}, {}),
         "no data.json, entries of its own": _zip(
             {"manifest.json": newer, "albums.json": "{}", "albums/1.json": "{}"}
         ),
@@ -291,6 +291,8 @@ async def test_memories_move_to_another_deployment_superseded_as_they_were(
     await turn(here, await start_conversation(here, "kogane"), "我搬到东京了")
     await turn(here, await start_conversation(here, "mano"), "我家的猫叫小白哦")
     kept = await remembered(here)  # once all three are written down
+    old = next(m for m in await memories(here) if m["text"] == OSAKA)
+    await here.patch(f"/api/memories/{old['id']}", json={"visibility": "private"})
     there = other_deployment(make_client, settings, tmp_path)
 
     package = await export(here, "memories")
@@ -300,18 +302,20 @@ async def test_memories_move_to_another_deployment_superseded_as_they_were(
     osaka, tokyo, cat = data["memories"]
     assert osaka["text"] == OSAKA and tokyo["text"] == TOKYO and cat["text"] == CAT
     assert osaka["superseded_by"] == tokyo["id"]
+    assert osaka["visibility"] == "private" and tokyo["visibility"] == "shared"
     assert tokyo["superseded_by"] is None and cat["superseded_by"] is None
     assert (tokyo["source_character_id"], tokyo["source_character_name"]) == ("kogane", "月岡恋鐘")
     assert all(m["conversation"] is None for m in data["memories"])
     assert set(osaka) == {
         "id", "source_character_id", "source_character_name", "conversation", "text",
-        "created_at", "superseded_by",
+        "created_at", "superseded_by", "visibility",
     }
     res = await import_package(there, package, "memories")
 
     assert res.status_code == 200, res.text
     assert res.json() == {**NOTHING_ELSE, "memories": 3, "profile": False}
     assert await remembered(there) == kept
+    assert next(m for m in await memories(there) if m["text"] == OSAKA)["visibility"] == "private"
     assert [m[4] for m in kept] == [False, False, True]
 
 
@@ -569,3 +573,53 @@ async def test_deleting_the_user_deletes_the_imports_they_made(
     assert (await client.post("/api/account/delete", json={"confirm": True})).status_code == 204
 
     assert rows_mentioning(settings.database_path, producer) == {}
+
+
+async def test_private_memory_roundtrip_and_legacy_import_cannot_relax_scope(
+    make_client: ClientFactory, settings: Settings, tmp_path: Path
+):
+    here = remembering(make_client, memorized(CAT))
+    await turn(here, await start_conversation(here, "mano"), "猫")
+    [cat] = await memories(here)
+    await here.patch(f"/api/memories/{cat['id']}", json={"visibility": "private"})
+    package = await export(here, "memories")
+    _, manifest, data = unzipped(package)
+    assert manifest["format"] == 4
+    assert data["memories"][0]["visibility"] == "private"
+    there = other_deployment(make_client, settings, tmp_path)
+    res = await import_package(there, package, "memories")
+    assert res.status_code == 200, res.text
+    [carried] = await memories(there)
+    assert carried["visibility"] == "private" and carried["source_character_id"] == "mano"
+    # An old shared copy of the same text must leave the local private row private.
+    data["memories"][0].pop("visibility")
+    legacy = package_of({**manifest, "format": 3}, data)
+    res = await import_package(there, legacy, "memories")
+    assert res.status_code == 200 and res.json()["memories"] == 0
+    assert (await memories(there))[0]["visibility"] == "private"
+    # A clean import of that old package keeps its original shared meaning.
+    res = await import_package(here, legacy, "memories")
+    assert res.status_code == 200 and res.json()["memories"] == 0
+    await here.delete("/api/memories")
+    res = await import_package(here, legacy, "memories")
+    assert res.status_code == 200 and res.json()["memories"] == 1
+    assert (await memories(here))[0]["visibility"] == "shared"
+
+
+async def test_package_keeps_intentional_shared_and_private_copies_separate(
+    make_client: ClientFactory, settings: Settings, tmp_path: Path
+):
+    here = remembering(make_client, memorized(CAT), memorized(CAT))
+    await turn(here, await start_conversation(here, "mano"), "猫")
+    [cat] = await memories(here)
+    await here.patch(f"/api/memories/{cat['id']}", json={"visibility": "private"})
+    await turn(here, await start_conversation(here, "kogane"), "猫")
+    assert len(await memories(here)) == 2
+    package = await export(here, "memories")
+    there = other_deployment(make_client, settings, tmp_path)
+    res = await import_package(there, package, "memories")
+    assert res.status_code == 200 and res.json()["memories"] == 2
+    assert {(m["source_character_id"], m["visibility"]) for m in await memories(there)} == {
+        ("mano", "private"), ("kogane", "shared")}
+    res = await import_package(there, package, "memories")
+    assert res.status_code == 200 and res.json()["memories"] == 0

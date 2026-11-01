@@ -50,7 +50,7 @@ async def test_lists_every_memory_with_the_character_it_was_told_to(
         (CAT, "mano", "櫻木真乃"),
     ]
     assert all(set(m) == {"id", "text", "source_character_id", "source_character_name",
-                          "created_at", "superseded"} for m in listed)
+                          "created_at", "superseded", "visibility"} for m in listed)
 
 
 async def test_deleting_a_memory_that_is_gone_is_not_found(make_client: ClientFactory):
@@ -75,6 +75,12 @@ async def test_users_see_and_touch_only_their_own_memories(
     [cat] = await memories(producer)
 
     assert [m["text"] for m in await memories(friend)] == ["制作人喜欢狗"]
+    res = await friend.patch(f"/api/memories/{cat['id']}", json={"visibility": "private"})
+    assert res.status_code == 404
+    assert (await memories(producer))[0]["visibility"] == "shared"
+    res = await producer.patch(f"/api/memories/{cat['id']}", json={"visibility": "private"})
+    assert res.status_code == 204
+    assert (await memories(producer))[0]["visibility"] == "private"
     res = await friend.delete(f"/api/memories/{cat['id']}")
     assert res.status_code == 404
     assert (await friend.delete("/api/memories")).status_code == 204
@@ -86,7 +92,7 @@ async def test_the_memories_api_needs_a_session(make_client: ClientFactory):
     client = make_client(FakeLLM(), user=None)
 
     for method, path in [("GET", "/api/memories"), ("DELETE", "/api/memories"),
-                         ("DELETE", "/api/memories/1")]:
+                         ("DELETE", "/api/memories/1"), ("PATCH", "/api/memories/1")]:
         res = await client.request(method, path)
         assert res.status_code == 401, (method, path)
 

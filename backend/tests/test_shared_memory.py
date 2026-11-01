@@ -3,12 +3,15 @@ character reaches another's prompt as hearsay, and Jev's judgement decides wheth
 turn finds memories at all. The memory rules themselves are tested on the memories
 module (test_memories)."""
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
 from eidolon.config import LLMSettings, Settings
+from eidolon.engine import ConversationEngine
+from eidolon.llm import ToolCall
 from tests.conftest import ClientFactory
 from tests.fakes import (
     FakeBackgroundLLM,
@@ -136,3 +139,69 @@ def test_the_background_model_is_configured_apart_from_the_chat_model(
         "https://chat.example/v1", "chat-key", "cheap-model"
     )
     assert settings.chat_llm.model == "chat-model"
+
+
+async def test_privatizing_during_streaming_invalidates_the_turns_later_extraction(
+    make_client: ClientFactory,
+):
+    release = asyncio.Event()
+    llm = FakeLLM(REPLY, ["<ja>小白</ja><zh>小白</zh>", release])
+    background = FakeBackgroundLLM(memorized(CAT), memorized(TRIP))
+    client = make_client(
+        llm, retrieval_judge=FakeJudge(answer="memories"), embedder=FakeEmbedder(),
+        reranker=FakeReranker("猫"), background_llm=background,
+    )
+    await turn(client, await start_conversation(client, "mano"), "猫")
+    [cat] = (await client.get("/api/memories")).json()
+    conversation = await start_conversation(client, "kogane")
+    pending = asyncio.create_task(turn(client, conversation, "猫还好吗"))
+    try:
+        async with asyncio.timeout(3):
+            while len(llm.prompts) < 2:
+                await asyncio.sleep(0)
+        assert CAT in memories_section(context_of(llm.prompts[-1]))
+        res = await client.patch(f"/api/memories/{cat['id']}", json={"visibility": "private"})
+        assert res.status_code == 204
+    finally:
+        release.set()
+        await pending
+    assert [(m["text"], m["visibility"]) for m in (await client.get("/api/memories")).json()] == [(CAT, "private")]
+    assert len(background.prompts) == 1  # the secret-bearing reply is never sent for extraction
+
+
+async def test_tool_round_refreshes_memory_scope_without_discarding_tool_messages(
+    make_client: ClientFactory, monkeypatch: pytest.MonkeyPatch,
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def paused_tool(self, character, call):
+        entered.set()
+        await release.wait()
+        return "找到的剧情"
+
+    monkeypatch.setattr(ConversationEngine, "_call_tool", paused_tool)
+    call = ToolCall("secret-round", "recall_story", {"query": "公园"})
+    llm = FakeLLM(REPLY, ["<ja>小白</ja><zh>小白</zh>", call], REPLY)
+    client = make_client(
+        llm, retrieval_judge=FakeJudge(answer="memories"), embedder=FakeEmbedder(),
+        reranker=FakeReranker("猫"),
+        background_llm=FakeBackgroundLLM(memorized(CAT), memorized(TRIP)),
+    )
+    await turn(client, await start_conversation(client, "mano"), "猫")
+    [cat] = (await client.get("/api/memories")).json()
+    conversation = await start_conversation(client, "kogane")
+    pending = asyncio.create_task(turn(client, conversation, "猫还好吗"))
+    try:
+        async with asyncio.timeout(3):
+            await entered.wait()
+        assert CAT in memories_section(context_of(llm.prompts[-1]))
+        res = await client.patch(f"/api/memories/{cat['id']}", json={"visibility": "private"})
+        assert res.status_code == 204
+    finally:
+        release.set()
+        await pending
+    assert memories_section(context_of(llm.prompts[-1])) == ""
+    assistant, tool = llm.prompts[-1][-2:]
+    assert assistant.tool_calls == (call,) and "小白" in assistant.content
+    assert tool.role == "tool" and tool.tool_call_id == call.id and "找到的剧情" in tool.content
+    assert [m["text"] for m in (await client.get("/api/memories")).json()] == [CAT]

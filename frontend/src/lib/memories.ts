@@ -12,3 +12,10 @@ export function sourceCharacter(memory: Memory, characters: readonly Character[]
 export function supersededMark(memory: Memory): string | null {
   return memory.superseded ? copy.memories.superseded : null;
 }
+
+/** 私有对象始终是来源角色，角色移除后也保留范围。 */
+export function visibilityLabel(memory: Memory): string {
+  return memory.visibility === "private"
+    ? copy.memories.private(memory.source_character_name ?? copy.memories.goneCharacter)
+    : copy.memories.shared;
+}

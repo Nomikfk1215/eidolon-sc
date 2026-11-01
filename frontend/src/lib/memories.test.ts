@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Character, Memory } from "@/lib/api";
-import { sourceCharacter, supersededMark } from "@/lib/memories";
+import { sourceCharacter, supersededMark, visibilityLabel } from "@/lib/memories";
 
 const mano: Character = {
   id: "mano",
@@ -33,6 +33,7 @@ const memory = (source: string, superseded = false): Memory => ({
   source_character_name: source === "mano" ? "櫻木真乃" : null,
   created_at: "2026-09-01T12:00:00Z",
   superseded,
+  visibility: "shared",
 });
 
 describe("sourceCharacter", () => {
@@ -56,5 +57,13 @@ describe("supersededMark", () => {
 
   it("有效的记忆不标", () => {
     expect(supersededMark(memory("mano"))).toBeNull();
+  });
+});
+
+describe("visibilityLabel", () => {
+  it("默认共享，私有标注来源角色，移除后不变成共享", () => {
+    expect(visibilityLabel(memory("mano"))).toBe("所有角色共享");
+    expect(visibilityLabel({ ...memory("mano"), visibility: "private" })).toBe("仅櫻木真乃知道");
+    expect(visibilityLabel({ ...memory("gone"), visibility: "private" })).toBe("仅已不在的角色知道");
   });
 });

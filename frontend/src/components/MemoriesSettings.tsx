@@ -29,23 +29,25 @@ import {
   clearMemories,
   deleteMemory,
   listMemories,
+  setMemoryVisibility,
   type Memory,
 } from "@/lib/api";
 import { toFailure, type Failure } from "@/lib/failure";
-import { sourceCharacter, supersededMark } from "@/lib/memories";
+import { sourceCharacter, supersededMark, visibilityLabel } from "@/lib/memories";
 import { cn } from "@/lib/utils";
-import { TrashIcon } from "@/theme/icons";
+import { PinIcon, TrashIcon } from "@/theme/icons";
 
 const t = copy.memories;
 
 /**
- * 设置「记忆」：所有角色共用的、关于用户的记忆，只能删，不能改。每条都标出来源角色；被取代的原地列出，淡一些并标出来。
+ * 设置「记忆」：所有角色共用的、关于用户的记忆，可删除、切换共享或仅来源角色可知。每条都标出来源角色；被取代的原地列出，淡一些并标出来。
  * 记忆是一行一行的列表（细分隔线，不套卡片）；删除一条、清空全部都要先确认，执行键是挂断红（DESIGN.md「Buttons」）。
  * 「清空」在二级页首的末端。条数一变就告诉设置的 layout，一级「记忆」的摘要跟着变。
  */
 export function MemoriesSettings() {
   const [memories, setMemories] = useState<Memory[] | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
+  const [saving, setSaving] = useState<Set<number>>(new Set());
   const [deleting, setDeleting] = useState<Set<number>>(new Set());
   // 要删的那条。确认框关上时只把 confirmingDelete 置成 false，pendingDelete 留着，关闭动画里的文字不会闪成空白。
   const [pendingDelete, setPendingDelete] = useState<Memory | null>(null);
@@ -97,6 +99,28 @@ export function MemoriesSettings() {
     }
   }
 
+  async function toggleVisibility(memory: Memory) {
+    const visibility = memory.visibility === "private" ? "shared" : "private";
+    ++refetches.current;
+    setSaving((ids) => new Set(ids).add(memory.id));
+    setFailure(null);
+    try {
+      await setMemoryVisibility(memory.id, visibility);
+      setMemories((list) => list?.map((m) => m.id === memory.id ? { ...m, visibility } : m) ?? null);
+    } catch (e) {
+      setFailure(toFailure(e));
+    } finally {
+      // 切换可能废弃了删除后的刷新；完成后再取完整列表，让取代状态也跟上。
+      const refetch = ++refetches.current;
+      listMemories().then((list) => refetch === refetches.current && setMemories(list), () => {});
+      setSaving((ids) => {
+        const rest = new Set(ids);
+        rest.delete(memory.id);
+        return rest;
+      });
+    }
+  }
+
   async function clear() {
     setClearing(true);
     setFailure(null);
@@ -119,7 +143,7 @@ export function MemoriesSettings() {
       category="memories"
       end={
         hasMemories && (
-          <Button variant="ghost" size="sm" onClick={() => setConfirmingClear(true)} disabled={clearing}>
+          <Button variant="ghost" size="sm" onClick={() => setConfirmingClear(true)} disabled={clearing || saving.size > 0 || deleting.size > 0}>
             {t.clear}
           </Button>
         )
@@ -146,6 +170,8 @@ export function MemoriesSettings() {
               const created = new Date(memory.created_at);
               const mark = supersededMark(memory);
               const busy = deleting.has(memory.id);
+              const privateMemory = memory.visibility === "private";
+              const scopeAction = privateMemory ? t.share : t.makePrivate(name);
               return (
                 <li key={memory.id} className="flex items-start gap-3 py-4">
                   <div className="pt-0.5">
@@ -154,6 +180,7 @@ export function MemoriesSettings() {
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <p className={cn("text-body break-words", mark && "text-muted-foreground")}>{memory.text}</p>
                     <div className="flex flex-wrap items-center gap-2">
+                      {privateMemory && <Badge variant="secondary">{visibilityLabel(memory)}</Badge>}
                       {mark && <Badge variant="secondary">{mark}</Badge>}
                       <span className="text-subtitle text-muted-foreground">
                         {t.toldTo(name)} · {t.date(created.getFullYear(), created.getMonth() + 1, created.getDate())}
@@ -166,8 +193,25 @@ export function MemoriesSettings() {
                         <Button
                           variant="ghost"
                           size="icon-sm"
+                          aria-label={scopeAction}
+                          aria-pressed={privateMemory}
+                          disabled={busy || clearing || saving.has(memory.id)}
+                          onClick={() => toggleVisibility(memory)}
+                        />
+                      }
+                    >
+                      {saving.has(memory.id) ? <Spinner /> : <PinIcon />}
+                    </TooltipTrigger>
+                    <TooltipContent>{scopeAction}</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
                           aria-label={t.removeLabel(memory.text)}
-                          disabled={busy || clearing}
+                          disabled={busy || clearing || saving.has(memory.id)}
                           onClick={() => askToRemove(memory)}
                         />
                       }

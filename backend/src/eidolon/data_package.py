@@ -75,10 +75,11 @@ from eidolon.store import (
     write_profile,
 )
 
-FORMAT = 3
+FORMAT = 4
 """The newest format this version reads, and the one it exports. Changing the format adds
 one to it, and keeps reading the older ones: 2 added her reach-outs (`reach_outs`), 3 her
-being unwell among the events (`unwell`) and the periods the user wrote down (`cycles`)."""
+being unwell among the events (`unwell`) and the periods the user wrote down (`cycles`),
+4 the visibility of memories (`visibility`)."""
 
 REACH_OUTS_SINCE = 2
 """The format whose conversations first held her reach-outs: before it, none may."""
@@ -483,6 +484,7 @@ class PackagedMemory(_Strict):
     text: Annotated[str, Field(min_length=1, max_length=MAX_MEMORY_LENGTH)]
     created_at: Time
     superseded_by: PackageId | None
+    visibility: Literal["shared", "private"] = "shared"
 
     @classmethod
     def of(cls, memory: Memory, with_conversations: bool) -> "PackagedMemory":
@@ -496,6 +498,7 @@ class PackagedMemory(_Strict):
             text=memory.text,
             created_at=_stored_time(memory.created_at),
             superseded_by=memory.superseded_by,
+            visibility=memory.visibility,
         )
 
     def carried(self, conversations: Mapping[PackageKey, str]) -> CarriedMemory:
@@ -503,6 +506,7 @@ class PackagedMemory(_Strict):
         package's; none if it has none, the package's not imported."""
         return CarriedMemory(
             key=self.id,
+            visibility=self.visibility,
             source_character_id=self.source_character_id,
             text=self.text,
             created_at=self.created_at,
@@ -976,6 +980,8 @@ def _read(zipped: zipfile.ZipFile) -> tuple[Manifest, PackageData, dict[str, byt
             raise BrokenPackage("her being unwell in a format before it")
         if manifest.format < CYCLES_SINCE and data.cycles is not None:
             raise BrokenPackage("periods written down in a format before them")
+        if manifest.format < 4 and any(m.visibility != "shared" for m in data.memories or []):
+            raise BrokenPackage("private memories in a format before them")
         listed = set(manifest.categories)
         held = {c for c in CATEGORIES if c != "photos" and getattr(data, c) is not None}
         photos = data.photos()

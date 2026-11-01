@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -187,6 +188,10 @@ def _picture(path: Path, request: Request) -> Response:
     if etag in (tag.strip() for tag in cached_etags.split(",")):
         return Response(status_code=304, headers={"ETag": etag, **_PICTURE_CACHE})
     return response
+
+
+class MemoryVisibilityInput(BaseModel):
+    visibility: Literal["shared", "private"]
 
 
 class NewConversation(BaseModel):
@@ -664,9 +669,15 @@ def create_app(backend: Backend) -> FastAPI:
                 "source_character_name": m.source_character_name,
                 "created_at": m.created_at,
                 "superseded": m.superseded_by is not None,
+                "visibility": m.visibility,
             }
             for m in await memory.entries(user_id)
         ]
+
+    @app.patch("/api/memories/{memory_id}", status_code=204)
+    async def set_memory_visibility(memory_id: int, body: MemoryVisibilityInput, user_id: UserId) -> None:
+        if not await memory.set_visibility(user_id, memory_id, body.visibility):
+            raise HTTPException(404, "记忆不存在")
 
     @app.delete("/api/memories/{memory_id}", status_code=204)
     async def delete_memory(memory_id: int, user_id: UserId) -> None:

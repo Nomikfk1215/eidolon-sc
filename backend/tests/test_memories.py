@@ -603,6 +603,8 @@ async def test_a_memory_deleted_while_being_superseded_stays_deleted(
     await tell(memories, world, await world.conversation("mano"), "我搬到东京了，狗也送人了")
     monkeypatch.setattr(memory, "SETTLE_TIMEOUT", 0.01)
 
+    while len(background.prompts) < 2:
+        await asyncio.sleep(0)
     assert await memories.delete(world.producer, osaka.id)
     gate.set()  # the background model answers at last
     monkeypatch.setattr(memory, "SETTLE_TIMEOUT", 5.0)
@@ -650,5 +652,213 @@ async def test_memories_kept_before_superseding_all_hold(tmp_path: Path, world: 
     section = await find(memories, world, await world.conversation("kogane"), "你知道我家的猫吗？")
     await memories.aclose()
 
-    assert (cat.text, cat.superseded_by) == (CAT, None)
+    assert (cat.text, cat.superseded_by, cat.visibility) == (CAT, None, "shared")
     assert CAT in section
+
+
+async def test_private_scope_filters_candidates_background_fallback_and_reaching_out(
+    world: World, make_memories: MemoriesFactory
+):
+    embedder, reranker = FakeEmbedder(), FakeReranker("制作人")
+    background = FakeBackgroundLLM(memorized(CAT), memorized())
+    memories = make_memories(embedder=embedder, reranker=reranker, background_llm=background)
+    mano, kogane = await world.conversation("mano"), await world.conversation("kogane")
+    await tell(memories, world, mano, "猫")
+    [cat] = await memories.entries(world.producer)
+    assert await memories.set_visibility(world.producer, cat.id, "private")
+    turn = await begin(memories, kogane)
+    assert await turn.candidates(await embedder.embed_query("猫")) == []
+    assert await turn.find("猫", [cat]) is None  # old candidate snapshots are refreshed
+    assert reranker.calls == []
+    assert CAT in await find(memories, world, mano, "猫")
+    assert await memories.for_reaching_out(kogane, TZ, "猫") is None
+    assert CAT in (await memories.for_reaching_out(mano, TZ, "猫") or "")
+    embedder.down = True
+    await tell(memories, world, kogane, "猫")
+    await memories.entries(world.producer)
+    assert CAT not in known("\n".join(m.content for m in background.prompts[-1]))
+    without_mano = Memories(world.db, {}, lambda: NOW)
+    try:
+        [gone] = await without_mano.entries(world.producer)
+        assert gone.visibility == "private" and gone.source_character_name is None
+        assert await without_mano.set_visibility(world.producer, cat.id, "shared")
+    finally:
+        await without_mano.aclose()
+    embedder.down = False
+    assert CAT in await find(memories, world, kogane, "猫")
+
+
+async def test_scope_is_rechecked_after_reranking_and_before_final_prompt(
+    world: World, make_memories: MemoriesFactory
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class PausedReranker(FakeReranker):
+        async def rerank(self, query, documents, top_n):
+            entered.set()
+            await release.wait()
+            return await super().rerank(query, documents, top_n)
+
+    memories = make_memories(memorized(CAT), reranker=PausedReranker("制作人"))
+    await tell(memories, world, await world.conversation("mano"), "猫")
+    [cat] = await memories.entries(world.producer)
+    turn = await begin(memories, await world.conversation("kogane"))
+    task = asyncio.create_task(turn.find("猫", [cat]))
+    await entered.wait()
+    await memories.set_visibility(world.producer, cat.id, "private")
+    release.set()
+    assert await task is None
+    await memories.set_visibility(world.producer, cat.id, "shared")
+    assert CAT in (await turn.find("猫", [cat]) or "")
+    await memories.set_visibility(world.producer, cat.id, "private")
+    assert await turn.refresh_prompt() is None
+
+
+async def test_private_inputs_taint_all_extracted_memories_and_preserve_superseding(
+    world: World, make_memories: MemoriesFactory
+):
+    memories = make_memories(memorized(CAT), memorized(TRIP), superseding(OSAKA, CAT))
+    mano = await world.conversation("mano")
+    await tell(memories, world, mano, "猫")
+    [cat] = await memories.entries(world.producer)
+    await memories.set_visibility(world.producer, cat.id, "private")
+    await tell(memories, world, mano, "旅行")
+    assert all(m.visibility == "private" for m in await memories.entries(world.producer))
+    await tell(memories, world, mano, "大阪")
+    entries = await memories.entries(world.producer)
+    replacement = next(m for m in entries if m.text == OSAKA)
+    assert replacement.visibility == "private"
+    assert next(m for m in entries if m.id == cat.id).superseded_by == replacement.id
+    await memories.set_visibility(world.producer, cat.id, "shared")
+    assert next(m for m in await memories.entries(world.producer) if m.id == cat.id).superseded_by == replacement.id
+    # Same words told to someone else do not reuse the private row or its chain.
+    await memories.set_visibility(world.producer, cat.id, "private")
+    other = make_memories(memorized(CAT))
+    await tell(other, world, await world.conversation("kogane"), "猫")
+    assert {(m.source_character_id, m.visibility) for m in await other.entries(world.producer)
+            if m.text == CAT} == {("mano", "private"), ("kogane", "shared")}
+
+
+async def test_extraction_started_before_scope_change_cannot_write_old_shared_results(
+    world: World, make_memories: MemoriesFactory
+):
+    gate = asyncio.Event()
+    gate.set()
+    background = FakeBackgroundLLM(memorized(CAT), memorized(TRIP), gate=gate)
+    memories = make_memories(background_llm=background)
+    await tell(memories, world, await world.conversation("mano"), "猫")
+    [cat] = await memories.entries(world.producer)
+    gate.clear()
+    await tell(memories, world, await world.conversation("kogane"), "旅行")
+    while len(background.prompts) < 2:
+        await asyncio.sleep(0)
+    await memories.set_visibility(world.producer, cat.id, "private")
+    await memories.set_visibility(world.producer, cat.id, "shared")
+    gate.set()
+    assert [m.text for m in await memories.entries(world.producer)] == [CAT]
+
+
+async def test_private_scope_migration_keeps_ids_vectors_and_superseding(world: World):
+    def legacy(db):
+        db.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                   " user_id TEXT NOT NULL REFERENCES users(id), source_character_id TEXT NOT NULL,"
+                   " conversation_id TEXT REFERENCES conversations(id), text TEXT NOT NULL,"
+                   " created_at TEXT NOT NULL, superseded_by INTEGER, UNIQUE(user_id, text))")
+        db.executemany("INSERT INTO memories (id, user_id, source_character_id, text, created_at, superseded_by)"
+                       " VALUES (?, ?, 'mano', ?, ?, ?)",
+                       [(41, world.producer, OSAKA, NOW.isoformat(), 42),
+                        (42, world.producer, TOKYO, NOW.isoformat(), None)])
+        db.execute("CREATE TABLE memory_vectors (memory_id INTEGER NOT NULL, user_id TEXT NOT NULL,"
+                   " model TEXT NOT NULL, embedding BLOB NOT NULL, PRIMARY KEY(memory_id, model))")
+        db.execute("INSERT INTO memory_vectors VALUES (41, ?, 'old-model', ?)",
+                   (world.producer, b"old-vector"))
+
+    await world.db.write(legacy)
+    memories = Memories(world.db, world.characters, lambda: NOW)
+    try:
+        entries = await memories.entries(world.producer)
+        assert [(m.id, m.superseded_by, m.visibility) for m in entries] == [
+            (42, None, "shared"), (41, 42, "shared")]
+        assert await world.db.read(lambda db: db.execute("SELECT memory_id, embedding FROM memory_vectors").fetchall()) == [(41, b"old-vector")]
+        # Reopening is idempotent and the legacy cross-scope constraint is gone.
+        memories_again = Memories(world.db, world.characters, lambda: NOW)
+        await memories.set_visibility(world.producer, 41, "private")
+        await world.db.write(lambda db: db.execute(
+            "INSERT INTO memories (user_id, source_character_id, text, created_at) VALUES (?, 'kogane', ?, ?)",
+            (world.producer, OSAKA, NOW.isoformat())).rowcount)
+        assert len(await memories_again.entries(world.producer)) == 3
+        await memories_again.aclose()
+    finally:
+        await memories.aclose()
+
+
+async def test_private_chat_input_taints_extraction_when_fallback_shows_only_recent_shared_memories(
+    world: World, make_memories: MemoriesFactory,
+):
+    derived = "制作人的猫小白最近喜欢在窗边睡觉"
+    recent = [f"制作人最近在学第{i}种手艺" for i in range(memory.SHOWN_MEMORIES)]
+    embedder = FakeEmbedder()
+    background = FakeBackgroundLLM(memorized(derived))
+    memories = make_memories(embedder=embedder, reranker=FakeReranker("猫"), background_llm=background)
+    carried = [memory.CarriedMemory(1, "mano", CAT, NOW.isoformat(), None, None, "private")]
+    carried.extend(memory.CarriedMemory(i + 2, "kogane", text, NOW.isoformat(), None, None)
+                   for i, text in enumerate(recent))
+    await world.db.write(memory.add_carried, world.producer, carried)
+    conversation = await world.conversation("mano")
+    turn = await begin(memories, conversation)
+    query_vector = await embedder.embed_query("猫")
+    candidates = await turn.candidates(query_vector)
+    await turn.find("猫", candidates)
+    assert CAT in (await turn.refresh_prompt() or "")  # actually injected into the chat model
+    # The chat model replies with the secret; meanwhile background embedding becomes
+    # unavailable. Its newest-memories fallback excludes the old private CAT entirely.
+    await world.db.write(lambda db: db.execute("DELETE FROM memory_vectors WHERE memory_id != 1").rowcount)
+    embedder.documents_down = True
+    turn.write_down([], "它最近喜欢在哪睡觉？", await world.reply(
+        conversation, "它最近喜欢在哪睡觉？", Segment("シロは窓辺で寝てるね", CAT)
+    ), query_vector)
+    entries = await memories.entries(world.producer)
+    prompt = "\n".join(m.content for m in background.prompts[-1])
+    assert set(known(prompt)) == set(recent) and CAT not in known(prompt)
+    assert CAT not in prompt  # her private-bearing reply is excluded too
+    written = next(m for m in entries if m.text == derived)
+    assert written.visibility == "private" and written.source_character_id == "mano"
+
+
+async def test_private_users_extract_shared_new_facts_without_cross_turn_private_history(
+    world: World, make_memories: MemoriesFactory,
+):
+    recent = [f"制作人最近在学第{i}种手艺" for i in range(memory.SHOWN_MEMORIES)]
+    new_fact = "制作人开始学习钢琴"
+    embedder = FakeEmbedder()
+    background = FakeBackgroundLLM(memorized(), memorized(new_fact))
+    memories = make_memories(embedder=embedder, reranker=FakeReranker("猫"), background_llm=background)
+    carried = [memory.CarriedMemory(1, "mano", CAT, NOW.isoformat(), None, None, "private")]
+    carried.extend(memory.CarriedMemory(i + 2, "kogane", text, NOW.isoformat(), None, None)
+                   for i, text in enumerate(recent))
+    await world.db.write(memory.add_carried, world.producer, carried)
+    conversation = await world.conversation("mano")
+    first = await begin(memories, conversation)
+    vector = await embedder.embed_query("猫")
+    await first.find("猫", await first.candidates(vector))
+    assert CAT in (await first.refresh_prompt() or "")
+    first.write_down([], "用户历史里的秘密", await world.reply(
+        conversation, "用户历史里的秘密", Segment("シロ", CAT)
+    ), vector)
+    await memories.entries(world.producer)  # first extraction deliberately writes nothing
+    # Next turn does not retrieve the private memory. Embedding fails, so extraction
+    # sees only the 20 newer shared memories. Both old user text and her replies would
+    # reveal private context if they were included.
+    embedder.down = True
+    second = await begin(memories, conversation)
+    history = await world.store.list_messages(conversation.id)
+    second.write_down(history, new_fact, await world.reply(
+        conversation, new_fact, Segment("秘密を覚えてる", "当前回复里的秘密")
+    ))
+    entries = await memories.entries(world.producer)
+    prompt = "\n".join(m.content for m in background.prompts[-1])
+    assert set(known(prompt)) == set(recent)
+    assert all(secret not in prompt for secret in [CAT, "用户历史里的秘密", "当前回复里的秘密"])
+    assert new_fact in prompt
+    written = next(m for m in entries if m.text == new_fact)
+    assert written.visibility == "shared"

@@ -14,9 +14,28 @@ import {
   readAloud,
   redirectFor,
   sendTurn,
+  setMemoryVisibility,
   type TurnEvent,
 } from "@/lib/api";
 import { keepOwnKey, localOwnKeys } from "@/lib/localOwnKeys";
+
+describe("memory visibility", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends a JSON PATCH the memory endpoint can parse", async () => {
+    const fetch = vi.fn(async (path: string, init: RequestInit) => {
+      const request = new Request(`http://localhost${path}`, init);
+      const valid = request.method === "PATCH"
+        && request.headers.get("content-type") === "application/json"
+        && (await request.json()).visibility === "private";
+      return valid ? new Response(null, { status: 204 }) : Response.json({ detail: "invalid JSON request" }, { status: 422 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(setMemoryVisibility(7, "private")).resolves.toBeUndefined();
+    expect(fetch.mock.calls[0][0]).toBe("/api/memories/7");
+  });
+});
 
 describe("redirectFor", () => {
   it("sends a browser that is not signed in to the landing page, to sign in there", () => {
