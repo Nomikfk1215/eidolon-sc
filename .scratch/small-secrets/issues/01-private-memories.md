@@ -38,8 +38,11 @@ GitHub Issue: [#1](https://github.com/Nomikfk1215/eidolon-sc/issues/1)
 
 ### 验证
 
-- `sh scripts/affected-tests.sh 5ea672604f2e45144592bf3cf5fa60e51bb4faa3`：Ruff、全项目 Pyright、前端类型检查、238 项后端及 830 项前端测试。
+- `sh scripts/affected-tests.sh 5ea672604f2e45144592bf3cf5fa60e51bb4faa3`：Ruff、全项目 Pyright、前端类型检查、249 项后端及 830 项前端测试。
 - `npm run build -- --webpack`：生产构建通过；shadcn 纪律与 scratch 检查通过。
 - Playwright：构建产物在测试浏览器中加载，API 连接隔离的真实后端。验证桌面／390px 手机布局、图钉位置、私有保存、刷新和第二会话持久化、模拟保存失败、恢复共享，以及删除／范围切换之间延迟刷新竞态。
 - 本地前端监听服务的启动被工具以 `blocked by policy` 拒绝，因此浏览器通过请求拦截加载构建文件并转发 API；未验证 Next 运行时代理链。已有本机 3000/8000 服务未修改。临时验收脚本与仓库内截图已清理。
 - 模型相关回归通过捕获实际请求提示词验证读取隔离与私有派生规则。
+### CI 修复（票 01）
+
+首轮 CI 发现周期与搭话数据包的两处导出版本断言仍是 v3。将这两处契约断言更新为 v4；受影响检查补入对应文件，249 项后端、830 项前端测试通过。
