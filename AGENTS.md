@@ -36,6 +36,8 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+新增或修订个人 fork 的决策前，读 `docs/adr/README.md`：个人决策使用独立的 `ADR-Ultra-编号` 序列，注明与原作者 ADR 的关系。
+
 ### Frontend
 
 前端用 shadcn/ui（底层 Base UI，样式 `base-nova`）加 Tailwind v4。写前端代码前读 `frontend/AGENTS.md` 的「shadcn 纪律」，视觉规范以 `DESIGN.md` 为准。
